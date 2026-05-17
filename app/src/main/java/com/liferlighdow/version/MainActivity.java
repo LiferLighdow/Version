@@ -24,16 +24,24 @@ import android.view.ViewGroup;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.BaseAdapter;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.ListView;
 import android.widget.TextView;
+import android.app.admin.DevicePolicyManager;
+import android.content.ComponentName;
+import android.view.GestureDetector;
+import android.view.MotionEvent;
+import java.lang.reflect.Method;
 import android.provider.Settings;
 import android.content.SharedPreferences;
 import android.content.BroadcastReceiver;
 import android.content.IntentFilter;
 import android.net.Uri;
 
+import java.util.HashSet;
+import java.util.Set;
 import java.io.RandomAccessFile;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -58,9 +66,10 @@ public class MainActivity extends Activity {
     private final List<AppInfo> allApps = new ArrayList<>();
     private final List<AppInfo> filteredApps = new ArrayList<>();
     private AppAdapter adapter;
+    private GestureDetector gestureDetector;
+    private DevicePolicyManager devicePolicyManager;
+    private ComponentName adminComponent;
     private boolean isSearchVisible = false;
-    private boolean isPrivileged = false;
-    private static final int FLAG_PRIVILEGED = 1 << 30;
 
     private final BroadcastReceiver packageReceiver = new BroadcastReceiver() {
         @Override
@@ -76,6 +85,7 @@ public class MainActivity extends Activity {
     private SharedPreferences prefs;
     private static final String PREF_DOCK_PREFIX = "dock_pkg_";
     private static final String PREF_BLACK_MODE = "black_mode";
+    private static final String PREF_HIDDEN_APPS = "hidden_apps";
     private static final int DOCK_COUNT = 4;
 
     // 斤斤計較優化：重複使用物件避免 GC
@@ -99,9 +109,6 @@ public class MainActivity extends Activity {
         setContentView(R.layout.activity_main);
         prefs = getSharedPreferences("launcher_prefs", MODE_PRIVATE);
         
-        // 偵測是否為系統特權應用
-        isPrivileged = (getApplicationInfo().flags & FLAG_PRIVILEGED) != 0;
-        
         // 啟動後台執行緒處理 CPU 監測
         backgroundThread = new HandlerThread("StatsWorker");
         backgroundThread.start();
@@ -112,6 +119,7 @@ public class MainActivity extends Activity {
         loadApps();
         setupSearch();
         setupDock();
+        setupGestures();
 
         IntentFilter filter = new IntentFilter();
         filter.addAction(Intent.ACTION_PACKAGE_ADDED);
@@ -219,6 +227,56 @@ public class MainActivity extends Activity {
         applyBackgroundMode();
     }
 
+    private void setupGestures() {
+        devicePolicyManager = (DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
+        adminComponent = new ComponentName(this, AdminReceiver.class);
+        
+        gestureDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
+            @Override
+            public boolean onDoubleTap(MotionEvent e) {
+                if (devicePolicyManager.isAdminActive(adminComponent)) {
+                    devicePolicyManager.lockNow();
+                } else {
+                    // 導向開啟權限
+                    Intent intent = new Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN);
+                    intent.putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent);
+                    intent.putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION, "Needed for Double Tap to Sleep");
+                    startActivity(intent);
+                }
+                return true;
+            }
+
+            @Override
+            public boolean onFling(MotionEvent e1, MotionEvent e2, float velocityX, float velocityY) {
+                // 下滑偵測 (向下速度大於門檻且為垂直向)
+                if (velocityY > 500 && Math.abs(velocityY) > Math.abs(velocityX)) {
+                    expandNotifications();
+                    return true;
+                }
+                return false;
+            }
+        });
+    }
+
+    private void expandNotifications() {
+        try {
+            Object sbservice = getSystemService("statusbar");
+            Class<?> statusbarManager = Class.forName("android.app.StatusBarManager");
+            Method expand = statusbarManager.getMethod("expandNotificationsPanel");
+            expand.invoke(sbservice);
+        } catch (Exception ignored) {}
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent ev) {
+        if (!isSearchVisible) {
+            gestureDetector.onTouchEvent(ev);
+        }
+        return super.dispatchTouchEvent(ev);
+    }
+
+    public static class AdminReceiver extends android.app.admin.DeviceAdminReceiver {}
+
     private void showSettings() {
         android.app.AlertDialog.Builder builder = new android.app.AlertDialog.Builder(this);
         builder.setTitle("Settings");
@@ -226,21 +284,21 @@ public class MainActivity extends Activity {
         boolean isBlackMode = prefs.getBoolean(PREF_BLACK_MODE, false);
         String blackModeText = isBlackMode ? "Switch to Wallpaper Mode" : "Switch to Black Mode (AMOLED Save)";
         
-        String[] options = {blackModeText, "Set as Default Launcher"};
+        String[] options = {blackModeText, "Hide Apps", "Set as Default Launcher"};
         
         builder.setItems(options, (dialog, which) -> {
             if (which == 0) {
                 prefs.edit().putBoolean(PREF_BLACK_MODE, !isBlackMode).apply();
                 applyBackgroundMode();
             } else if (which == 1) {
+                showHideAppsDialog();
+            } else if (which == 2) {
                 try {
-                    // 開啟系統的預設應用程式設定頁面
                     Intent intent = new Intent(Settings.ACTION_HOME_SETTINGS);
                     intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                     startActivity(intent);
                 } catch (Exception e) {
                     try {
-                        // 備案：開啟通用的應用程式設定
                         Intent intent = new Intent(Settings.ACTION_SETTINGS);
                         intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                         startActivity(intent);
@@ -249,6 +307,75 @@ public class MainActivity extends Activity {
             }
         });
         builder.show();
+    }
+
+    private void showHideAppsDialog() {
+        PackageManager pm = getPackageManager();
+        Intent intent = new Intent(Intent.ACTION_MAIN, null);
+        intent.addCategory(Intent.CATEGORY_LAUNCHER);
+        List<ResolveInfo> allInstalledRI = pm.queryIntentActivities(intent, 0);
+        Collections.sort(allInstalledRI, new ResolveInfo.DisplayNameComparator(pm));
+
+        final List<AppInfo> appsForDialog = new ArrayList<>();
+        for (ResolveInfo ri : allInstalledRI) {
+            appsForDialog.add(new AppInfo(
+                ri.loadLabel(pm).toString(),
+                ri.activityInfo.packageName,
+                ri.loadIcon(pm)
+            ));
+        }
+
+        Set<String> hidden = prefs.getStringSet(PREF_HIDDEN_APPS, new HashSet<>());
+        final boolean[] checked = new boolean[appsForDialog.size()];
+        for (int i = 0; i < appsForDialog.size(); i++) {
+            checked[i] = hidden.contains(appsForDialog.get(i).packageName);
+        }
+
+        ListView listView = new ListView(this);
+        BaseAdapter adapter = new BaseAdapter() {
+            @Override public int getCount() { return appsForDialog.size(); }
+            @Override public Object getItem(int p) { return appsForDialog.get(p); }
+            @Override public long getItemId(int p) { return p; }
+            @Override public View getView(int p, View v, ViewGroup parent) {
+                if (v == null) v = getLayoutInflater().inflate(R.layout.item_app, parent, false);
+                AppInfo app = appsForDialog.get(p);
+                ((TextView) v.findViewById(R.id.item_label)).setText(app.label);
+                ((TextView) v.findViewById(R.id.item_label)).setTextColor(android.graphics.Color.BLACK);
+                ImageView icon = v.findViewById(R.id.item_icon);
+                icon.setImageDrawable(app.icon);
+                icon.setOutlineProvider(new ViewOutlineProvider() {
+                    @Override public void getOutline(View view, Outline outline) {
+                        outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), view.getHeight() * 0.2f);
+                    }
+                });
+                icon.setClipToOutline(true);
+                
+                android.widget.CheckBox cb = v.findViewById(R.id.item_check);
+                cb.setVisibility(View.VISIBLE);
+                cb.setChecked(checked[p]);
+                return v;
+            }
+        };
+        listView.setAdapter(adapter);
+        listView.setOnItemClickListener((parent, view, position, id) -> {
+            checked[position] = !checked[position];
+            adapter.notifyDataSetChanged();
+        });
+
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("Hide Apps")
+            .setView(listView)
+            .setPositiveButton("Done", (dialog, which) -> {
+                Set<String> newHidden = new HashSet<>();
+                for (int i = 0; i < appsForDialog.size(); i++) {
+                    if (checked[i]) newHidden.add(appsForDialog.get(i).packageName);
+                }
+                prefs.edit().putStringSet(PREF_HIDDEN_APPS, newHidden).apply();
+                loadApps();
+                setupDock();
+                if (isSearchVisible) filterApps(searchInput.getText().toString());
+            })
+            .show();
     }
 
     private void applyBackgroundMode() {
@@ -345,11 +472,17 @@ public class MainActivity extends Activity {
         Intent i = new Intent(Intent.ACTION_MAIN, null);
         i.addCategory(Intent.CATEGORY_LAUNCHER);
         List<ResolveInfo> availableActivities = pm.queryIntentActivities(i, 0);
+        
+        Set<String> hidden = prefs.getStringSet(PREF_HIDDEN_APPS, new HashSet<>());
+        
         allApps.clear();
         for (ResolveInfo ri : availableActivities) {
+            String pkg = ri.activityInfo.packageName;
+            if (hidden.contains(pkg)) continue;
+            
             allApps.add(new AppInfo(
                 ri.loadLabel(pm).toString(),
-                ri.activityInfo.packageName,
+                pkg,
                 ri.loadIcon(pm)
             ));
         }

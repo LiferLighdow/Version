@@ -14,9 +14,18 @@
 
     <TextView
         android:id="@+id/item_label"
-        android:layout_width="match_parent"
+        android:layout_width="0dp"
         android:layout_height="wrap_content"
+        android:layout_weight="1"
         android:layout_marginStart="16dp"
         android:textColor="#FFFFFF"
         android:textSize="16sp" />
+
+    <CheckBox
+        android:id="@+id/item_check"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:visibility="gone"
+        android:focusable="false"
+        android:clickable="false" />
 </LinearLayout>
