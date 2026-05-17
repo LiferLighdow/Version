@@ -1,35 +1,33 @@
-# Version Launcher (v1.0.0)
+# VersionOS Launcher 🚀
 
-A high-performance, ultra-lightweight Android Launcher designed with a focus on "Invisible Personalization" and extreme resource efficiency. Created for the upcoming **VersionOS (AOSP Android 17)** but fully compatible with legacy hardware.
+**Inspire from KISS Launcher but LIGHTER.**
 
-## 🚀 Highlights
+VersionOS is an ultra-minimalist, high-performance Android launcher designed for developers and minimalism enthusiasts who value speed, efficiency, and zero bloatware.
 
-- **Extreme Size:** Only **~186 KB** (smaller than most high-res wallpapers).
-- **Minimal RAM Footprint:** Runs at **~27-28 MB** Pss Total on 2GB RAM devices.
-- **Pure Engineering:** Zero dependencies. No `androidx`, no `Material` library—just pure Android Framework APIs.
-- **Integrated Monitoring:** Real-time CPU, RAM, and ROM status displayed directly on the home screen.
-- **Aesthetic Precision:** System-level rounded corners and translucent UI elements optimized for GPU performance.
+## 📦 The 45KB Miracle
+While modern launchers take up 50MB+, VersionOS delivers a full-featured experience in just **45 KB**. We achieved this by stripping away all external libraries and returning to pure Android SDK development.
 
-## 🛠 System Features
+## ✨ Key Features
+- **Ultra Lightweight**: Only 45 KB (Universal APK). 0 dependencies.
+- **Responsive UI**: Automatically adjusts icon sizes and layouts based on screen DPI and aspect ratio.
+- **Hybrid Search/Drawer**: A single search bar that doubles as an app drawer—fast, intuitive, and clutter-free.
+- **Live Stats Widget**: Real-time CPU usage, RAM, and ROM monitoring with a sleek capsule design.
+- **AMOLED Save Mode**: Switch to a pure black (#000000) background to save battery on OLED screens.
+- **Edge-to-Edge Experience**: Fully transparent Status Bar and Navigation Bar for total immersion.
+- **Native Performance**: Uses `ViewOutlineProvider` for hardware-accelerated corner clipping.
 
-- **Dual-Mode Architecture:** - **Standard APK:** Works on any Android device with minimal permissions.
-  - **System Integration:** When placed in `/system/priv-app/`, it unlocks native gestures like "Double Tap to Sleep" via `PowerManager` and seamless window transition animations.
-- **Low Overdraw:** Optimized view hierarchy (only 21 Views) to maintain a steady 60 FPS even on 10-year-old hardware.
+## 🛠 Advanced Controls
+- **Tap Clock**: Open Alarms.
+- **Tap Date**: Open Calendar.
+- **Long Press Empty Space**: Access Settings (Black Mode toggle / Set as Default).
+- **Long Press Dock Icon**: Customize shortcut package.
+- **One-Tap Search**: Instant access to all apps or web search.
 
-## 📊 Benchmarks
+## 🚀 Performance Philosophy
+VersionOS is built on the principle of **"Mechanical Sympathy"**. By using native Android APIs instead of heavy libraries like AppCompat or Material Components, we ensure:
+- Near-zero RAM footprint.
+- Instantaneous cold starts.
+- Maximum battery longevity.
 
-| Metric | Result |
-| :--- | :--- |
-| **APK Size** | 186 KB |
-| **Private Dirty RAM** | ~11.5 MB |
-| **Cold Start Time** | < 100ms |
-| **View Hierarchy Depth** | 2-3 Layers |
-
-## 📦 Getting Started
-
-1. Download the latest `app-release.apk` from the [Releases](https://github.com/liferlighdow/Version/releases) page.
-2. Set as the default launcher.
-3. **Recommended Bundle:** Best paired with **VersionOS Wallpaper (185 KB)** and our **[IME (44 KB)](https://github.com/liferlighdow/IME)** for the ultimate "Air-like" experience.
-
-## 📜 Philosophy
-> "Aesthetics should not be built on the waste of resources. Every byte is a choice." — *Lifer_Lighdow*
+## 📝 License
+MIT License. Feel free to fork and keep it light.
