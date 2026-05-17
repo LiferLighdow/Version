@@ -1,6 +1,8 @@
 package com.liferlighdow.version;
 
 import android.app.Activity;
+import android.graphics.Outline;
+import android.view.ViewOutlineProvider;
 import android.app.ActivityManager;
 import android.content.Context;
 import android.content.Intent;
@@ -26,7 +28,11 @@ import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.ListView;
 import android.widget.TextView;
+import android.provider.Settings;
 import android.content.SharedPreferences;
+import android.content.BroadcastReceiver;
+import android.content.IntentFilter;
+import android.net.Uri;
 
 import java.io.RandomAccessFile;
 import java.text.SimpleDateFormat;
@@ -56,8 +62,20 @@ public class MainActivity extends Activity {
     private boolean isPrivileged = false;
     private static final int FLAG_PRIVILEGED = 1 << 30;
 
+    private final BroadcastReceiver packageReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            loadApps();
+            uiHandler.post(() -> {
+                setupDock();
+                if (adapter != null) adapter.notifyDataSetChanged();
+            });
+        }
+    };
+
     private SharedPreferences prefs;
     private static final String PREF_DOCK_PREFIX = "dock_pkg_";
+    private static final String PREF_BLACK_MODE = "black_mode";
     private static final int DOCK_COUNT = 4;
 
     // 斤斤計較優化：重複使用物件避免 GC
@@ -70,6 +88,14 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        
+        // 使用原生 API 實現全螢幕透明
+        getWindow().getDecorView().setSystemUiVisibility(
+            View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+        );
+        getWindow().setStatusBarColor(android.graphics.Color.TRANSPARENT);
+        getWindow().setNavigationBarColor(android.graphics.Color.TRANSPARENT);
+
         setContentView(R.layout.activity_main);
         prefs = getSharedPreferences("launcher_prefs", MODE_PRIVATE);
         
@@ -82,9 +108,61 @@ public class MainActivity extends Activity {
         backgroundHandler = new Handler(backgroundThread.getLooper());
 
         initViews();
+        adjustUiToScreen(); // 根據螢幕動態調整大小
         loadApps();
         setupSearch();
         setupDock();
+
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(Intent.ACTION_PACKAGE_ADDED);
+        filter.addAction(Intent.ACTION_PACKAGE_REMOVED);
+        filter.addAction(Intent.ACTION_PACKAGE_CHANGED);
+        filter.addDataScheme("package");
+        registerReceiver(packageReceiver, filter);
+    }
+
+    private void adjustUiToScreen() {
+        android.util.DisplayMetrics metrics = new android.util.DisplayMetrics();
+        getWindowManager().getDefaultDisplay().getMetrics(metrics);
+        
+        // 計算理想的圖示大小：螢幕寬度的 16.5%
+        int screenWidth = metrics.widthPixels;
+        int iconSize = (int) (screenWidth * 0.165);
+        int dockHeight = (int) (iconSize * 1.4);
+        int searchHeight = (int) (metrics.density * 52); // 固定搜尋框高度感
+        
+        // 調整 Dock 高度
+        View dock = findViewById(R.id.dock);
+        ViewGroup.LayoutParams dockParams = dock.getLayoutParams();
+        dockParams.height = dockHeight;
+        dock.setLayoutParams(dockParams);
+        
+        // 調整 4 個 Dock 圖示的大小
+        int[] dockIds = {R.id.dock_1, R.id.dock_2, R.id.dock_3, R.id.dock_4};
+        final float cornerRadius = iconSize * 0.23f;
+        
+        for (int id : dockIds) {
+            View v = findViewById(id);
+            ViewGroup.LayoutParams p = v.getLayoutParams();
+            p.width = iconSize;
+            p.height = iconSize;
+            v.setLayoutParams(p);
+            
+            // 使用 ViewOutlineProvider 實現原生高效圓角裁切 (不依賴庫)
+            v.setOutlineProvider(new ViewOutlineProvider() {
+                @Override
+                public void getOutline(View view, Outline outline) {
+                    outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), cornerRadius);
+                }
+            });
+            v.setClipToOutline(true);
+        }
+        
+        // 調整搜尋框高度
+        View search = findViewById(R.id.home_search);
+        ViewGroup.LayoutParams searchParams = search.getLayoutParams();
+        searchParams.height = searchHeight;
+        search.setLayoutParams(searchParams);
     }
 
     private void initViews() {
@@ -97,11 +175,97 @@ public class MainActivity extends Activity {
         searchInput = findViewById(R.id.search_input);
         homeSearch = findViewById(R.id.home_search);
         searchResults = findViewById(R.id.search_results);
+
+        // 時鐘點擊：開啟時鐘/鬧鐘
+        timeText.setOnClickListener(v -> {
+            try {
+                Intent intent = new Intent(android.provider.AlarmClock.ACTION_SHOW_ALARMS);
+                intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(intent);
+            } catch (Exception e) {
+                // 如果系統不支援標準 Action，嘗試通用開啟方式
+                Intent intent = new Intent(Intent.ACTION_MAIN);
+                intent.addCategory(Intent.CATEGORY_APP_MESSAGING); // 這裡通常改為時鐘相關，但時鐘沒有通用 Category
+                // 改用尋找特定 Package 的備案
+                try {
+                    startActivity(getPackageManager().getLaunchIntentForPackage("com.google.android.deskclock"));
+                } catch (Exception ignored) {}
+            }
+        });
+
+        // 日期點擊：開啟行事曆
+        dateText.setOnClickListener(v -> {
+            try {
+                long startMillis = System.currentTimeMillis();
+                Uri.Builder builder = Uri.parse("content://com.android.calendar/time").buildUpon();
+                android.content.ContentUris.appendId(builder, startMillis);
+                Intent intent = new Intent(Intent.ACTION_VIEW).setData(builder.build());
+                startActivity(intent);
+            } catch (Exception e) {
+                try {
+                    Intent intent = new Intent(Intent.ACTION_MAIN);
+                    intent.addCategory(Intent.CATEGORY_APP_CALENDAR);
+                    startActivity(intent);
+                } catch (Exception ignored) {}
+            }
+        });
+
+        // 監聽長按桌面空白處 (root_container)
+        findViewById(R.id.root_container).setOnLongClickListener(v -> {
+            showSettings();
+            return true;
+        });
+        
+        applyBackgroundMode();
+    }
+
+    private void showSettings() {
+        android.app.AlertDialog.Builder builder = new android.app.AlertDialog.Builder(this);
+        builder.setTitle("Settings");
+        
+        boolean isBlackMode = prefs.getBoolean(PREF_BLACK_MODE, false);
+        String blackModeText = isBlackMode ? "Switch to Wallpaper Mode" : "Switch to Black Mode (AMOLED Save)";
+        
+        String[] options = {blackModeText, "Set as Default Launcher"};
+        
+        builder.setItems(options, (dialog, which) -> {
+            if (which == 0) {
+                prefs.edit().putBoolean(PREF_BLACK_MODE, !isBlackMode).apply();
+                applyBackgroundMode();
+            } else if (which == 1) {
+                try {
+                    // 開啟系統的預設應用程式設定頁面
+                    Intent intent = new Intent(Settings.ACTION_HOME_SETTINGS);
+                    intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(intent);
+                } catch (Exception e) {
+                    try {
+                        // 備案：開啟通用的應用程式設定
+                        Intent intent = new Intent(Settings.ACTION_SETTINGS);
+                        intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        startActivity(intent);
+                    } catch (Exception ignored) {}
+                }
+            }
+        });
+        builder.show();
+    }
+
+    private void applyBackgroundMode() {
+        boolean isBlackMode = prefs.getBoolean(PREF_BLACK_MODE, false);
+        View root = findViewById(R.id.root_container);
+        if (isBlackMode) {
+            root.setBackgroundColor(0xFF000000); // 純黑
+        } else {
+            root.setBackgroundColor(0x00000000); // 透明 (顯示壁紙)
+        }
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        // 移除 loadApps() 和 setupDock()，改為僅在必要時更新
+        // 因為 packageReceiver 與 onCreate 已經涵蓋了初始化與變動監聽
         startUpdaters();
     }
 
@@ -115,6 +279,9 @@ public class MainActivity extends Activity {
     protected void onDestroy() {
         super.onDestroy();
         backgroundThread.quit();
+        try {
+            unregisterReceiver(packageReceiver);
+        } catch (Exception ignored) {}
     }
 
     private void startUpdaters() {
@@ -165,12 +332,12 @@ public class MainActivity extends Activity {
 
     private void updateRam() {
         stringBuilder.setLength(0);
-        ramStat.setText(stringBuilder.append("RAM: ").append(getUsedMemory()));
+        ramStat.setText(stringBuilder.append("RAM: ").append(getRamPercentage()).append("%"));
     }
 
     private void updateRom() {
         stringBuilder.setLength(0);
-        romStat.setText(stringBuilder.append("ROM: ").append(getAvailableInternalMemorySize()));
+        romStat.setText(stringBuilder.append("ROM: ").append(getRomPercentage()).append("%"));
     }
 
     private void loadApps() {
@@ -209,15 +376,26 @@ public class MainActivity extends Activity {
             @Override public void afterTextChanged(Editable s) {}
         };
 
-        searchInput.addTextChangedListener(commonTextWatcher);
-        homeSearch.addTextChangedListener(commonTextWatcher);
+        // 點擊搜尋框即進入搜尋模式
+        View.OnClickListener clickListener = v -> {
+            if (!isSearchVisible) showSearch();
+        };
+        homeSearch.setOnClickListener(clickListener);
+        homeSearch.setOnFocusChangeListener((v, hasFocus) -> {
+            if (hasFocus && !isSearchVisible) showSearch();
+        });
 
-        homeSearch.setOnEditorActionListener((v, actionId, event) -> {
+        TextView.OnEditorActionListener searchListener = (v, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_SEARCH || (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER)) {
                 String query = v.getText().toString();
                 if (!query.isEmpty()) {
                     if (filteredApps.isEmpty()) {
-                        startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://www.google.com/search?q=" + query)));
+                        try {
+                            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=" + query));
+                            startActivity(intent);
+                        } catch (Exception e) {
+                            e.printStackTrace();
+                        }
                     } else {
                         launchApp(filteredApps.get(0).packageName);
                     }
@@ -226,12 +404,22 @@ public class MainActivity extends Activity {
                 return true;
             }
             return false;
-        });
+        };
+
+        searchInput.addTextChangedListener(commonTextWatcher);
+        homeSearch.addTextChangedListener(commonTextWatcher);
+
+        searchInput.setOnEditorActionListener(searchListener);
+        homeSearch.setOnEditorActionListener(searchListener);
     }
 
     private void filterApps(String query) {
         filteredApps.clear();
-        if (!query.isEmpty()) {
+        if (query.isEmpty()) {
+            // 當沒輸入文字時，顯示所有 APP (充當抽屜功能)
+            filteredApps.addAll(allApps);
+            Collections.sort(filteredApps, (a, b) -> a.label.compareToIgnoreCase(b.label));
+        } else {
             String lowerQuery = query.toLowerCase();
             for (AppInfo app : allApps) {
                 if (app.label.toLowerCase().contains(lowerQuery)) {
@@ -245,6 +433,7 @@ public class MainActivity extends Activity {
     private void showSearch() {
         isSearchVisible = true;
         searchContainer.setVisibility(View.VISIBLE);
+        filterApps(""); // 初始化時顯示完整列表
         searchInput.requestFocus();
         InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
         if (imm != null) imm.showSoftInput(searchInput, InputMethodManager.SHOW_IMPLICIT);
@@ -299,9 +488,38 @@ public class MainActivity extends Activity {
     private void showAppPickerForDock(int dockIndex) {
         android.app.AlertDialog.Builder builder = new android.app.AlertDialog.Builder(this);
         builder.setTitle("Pick an app");
-        String[] names = new String[allApps.size()];
-        for (int i = 0; i < allApps.size(); i++) names[i] = allApps.get(i).label;
-        builder.setItems(names, (dialog, which) -> {
+
+        // 使用自定義 Adapter 顯示圖示
+        android.widget.ListAdapter adapter = new android.widget.BaseAdapter() {
+            @Override public int getCount() { return allApps.size(); }
+            @Override public Object getItem(int position) { return allApps.get(position); }
+            @Override public long getItemId(int position) { return position; }
+            @Override public View getView(int position, View convertView, ViewGroup parent) {
+                if (convertView == null) {
+                    convertView = getLayoutInflater().inflate(R.layout.item_app, parent, false);
+                }
+                AppInfo app = allApps.get(position);
+                TextView label = convertView.findViewById(R.id.item_label);
+                ImageView icon = convertView.findViewById(R.id.item_icon);
+                
+                label.setText(app.label);
+                label.setTextColor(android.graphics.Color.BLACK); // 對話框背景通常是亮的，字改回黑色
+                icon.setImageDrawable(app.icon);
+
+                // 設定選單圖示的原生圓角
+                icon.setOutlineProvider(new ViewOutlineProvider() {
+                    @Override
+                    public void getOutline(View view, Outline outline) {
+                        outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), view.getHeight() * 0.2f);
+                    }
+                });
+                icon.setClipToOutline(true);
+
+                return convertView;
+            }
+        };
+
+        builder.setAdapter(adapter, (dialog, which) -> {
             prefs.edit().putString(PREF_DOCK_PREFIX + dockIndex, allApps.get(which).packageName).apply();
             setupDock();
         });
@@ -313,45 +531,19 @@ public class MainActivity extends Activity {
         if (intent != null) startActivity(intent);
     }
 
-    private String getUsedMemory() {
-        if (isPrivileged) {
-            // 系統模式：直接讀取 /proc/meminfo，避免 Binder 調用消耗
-            try (RandomAccessFile reader = new RandomAccessFile("/proc/meminfo", "r")) {
-                long total = 0, avail = 0;
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    if (line.startsWith("MemTotal:")) total = parseMeminfo(line);
-                    else if (line.startsWith("MemAvailable:")) avail = parseMeminfo(line);
-                    if (total > 0 && avail > 0) break;
-                }
-                if (total > 0) return (total - avail) / 1024 + "MB / " + total / 1024 + "MB";
-            } catch (Exception ignored) {}
-        }
-        
+    private int getRamPercentage() {
         ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
         ((ActivityManager) getSystemService(ACTIVITY_SERVICE)).getMemoryInfo(mi);
-        return (mi.totalMem - mi.availMem) / 1048576L + "MB / " + mi.totalMem / 1048576L + "MB";
+        if (mi.totalMem <= 0) return 0;
+        return (int) ((mi.totalMem - mi.availMem) * 100 / mi.totalMem);
     }
 
-    private long parseMeminfo(String line) {
-        // 快速提取數字字串，避免正則表達式的高開銷
-        int start = -1, end = -1;
-        for (int i = 0; i < line.length(); i++) {
-            char c = line.charAt(i);
-            if (Character.isDigit(c)) {
-                if (start == -1) start = i;
-            } else if (start != -1) {
-                end = i;
-                break;
-            }
-        }
-        return (start != -1 && end != -1) ? Long.parseLong(line.substring(start, end)) : 0;
-    }
-
-    private String getAvailableInternalMemorySize() {
+    private int getRomPercentage() {
         StatFs stat = new StatFs(Environment.getDataDirectory().getPath());
-        long blockSize = stat.getBlockSizeLong();
-        return (stat.getAvailableBlocksLong() * blockSize / 1073741824L) + "GB / " + (stat.getBlockCountLong() * blockSize / 1073741824L) + "GB";
+        long total = stat.getBlockCountLong() * stat.getBlockSizeLong();
+        long avail = stat.getAvailableBlocksLong() * stat.getBlockSizeLong();
+        if (total <= 0) return 0;
+        return (int) ((total - avail) * 100 / total);
     }
 
     private String getCPUUsage() {
@@ -380,14 +572,34 @@ public class MainActivity extends Activity {
         @Override public long getItemId(int p) { return p; }
         @Override public View getView(int p, View v, ViewGroup parent) {
             if (v == null) {
-                v = new TextView(MainActivity.this);
-                ((TextView)v).setTextColor(0xFFFFFFFF);
-                v.setPadding(20, 20, 20, 20);
+                v = getLayoutInflater().inflate(R.layout.item_app, parent, false);
             }
-            ((TextView)v).setText(filteredApps.get(p).label);
+            AppInfo app = filteredApps.get(p);
+            TextView label = v.findViewById(R.id.item_label);
+            ImageView icon = v.findViewById(R.id.item_icon);
+            
+            label.setText(app.label);
+            icon.setImageDrawable(app.icon);
+
+            // 搜尋列表中的圖示也套用原生圓角
+            icon.setOutlineProvider(new ViewOutlineProvider() {
+                @Override
+                public void getOutline(View view, Outline outline) {
+                    outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), view.getHeight() * 0.2f);
+                }
+            });
+            icon.setClipToOutline(true);
+
             return v;
         }
     }
 
-    @Override public void onBackPressed() { if (isSearchVisible) hideSearch(); }
+    @Override 
+    public void onBackPressed() { 
+        if (isSearchVisible) {
+            hideSearch(); 
+        } else {
+            super.onBackPressed();
+        }
+    }
 }

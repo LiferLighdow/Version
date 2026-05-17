@@ -37,6 +37,5 @@ android {
 }
 
 dependencies {
-    implementation(libs.core.ktx)
-    implementation(libs.material)
+    // 移除所有外部庫，回歸純淨 Android SDK
 }

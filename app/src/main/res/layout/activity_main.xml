@@ -40,45 +40,78 @@
                 android:text="Monday, Jan 1"
                 android:layout_marginBottom="16dp"/>
 
-            <!-- Stats moved here -->
-            <TextView
-                android:id="@+id/cpu_stat"
+            <!-- Stats Widget View -->
+            <LinearLayout
+                android:id="@+id/stats_widget"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:textColor="#CCCCCC"
-                android:textSize="14sp"
-                android:text="CPU: --" />
-            <TextView
-                android:id="@+id/ram_stat"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:textColor="#CCCCCC"
-                android:textSize="14sp"
-                android:text="RAM: --" />
-            <TextView
-                android:id="@+id/rom_stat"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:textColor="#CCCCCC"
-                android:textSize="14sp"
-                android:text="ROM: --" />
+                android:background="@drawable/dock_background"
+                android:orientation="horizontal"
+                android:paddingLeft="16dp"
+                android:paddingRight="16dp"
+                android:paddingTop="8dp"
+                android:paddingBottom="8dp"
+                android:layout_marginTop="8dp">
+
+                <TextView
+                    android:id="@+id/cpu_stat"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textColor="#FFFFFF"
+                    android:textSize="12sp"
+                    android:text="CPU: --%" />
+
+                <View
+                    android:layout_width="1dp"
+                    android:layout_height="12dp"
+                    android:layout_marginLeft="12dp"
+                    android:layout_marginRight="12dp"
+                    android:layout_gravity="center_vertical"
+                    android:background="#44FFFFFF" />
+
+                <TextView
+                    android:id="@+id/ram_stat"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textColor="#FFFFFF"
+                    android:textSize="12sp"
+                    android:text="RAM: --%" />
+
+                <View
+                    android:layout_width="1dp"
+                    android:layout_height="12dp"
+                    android:layout_marginLeft="12dp"
+                    android:layout_marginRight="12dp"
+                    android:layout_gravity="center_vertical"
+                    android:background="#44FFFFFF" />
+
+                <TextView
+                    android:id="@+id/rom_stat"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textColor="#FFFFFF"
+                    android:textSize="12sp"
+                    android:text="ROM: --%" />
+            </LinearLayout>
         </LinearLayout>
 
         <!-- Search Bar -->
         <EditText
             android:id="@+id/home_search"
             android:layout_width="match_parent"
-            android:layout_height="50dp"
+            android:layout_height="55dp"
             android:layout_above="@id/dock"
-            android:layout_marginHorizontal="24dp"
-            android:layout_marginBottom="12dp"
+            android:layout_marginLeft="24dp"
+            android:layout_marginRight="24dp"
+            android:layout_marginBottom="16dp"
             android:background="@drawable/search_bar_background"
             android:drawableStart="@android:drawable/ic_menu_search"
             android:drawablePadding="12dp"
             android:hint="Search apps or web..."
             android:imeOptions="actionSearch"
             android:inputType="text"
-            android:paddingHorizontal="20dp"
+            android:paddingLeft="20dp"
+            android:paddingRight="20dp"
             android:textColor="#FFFFFF"
             android:textColorHint="#CCCCCC" />
 
@@ -86,16 +119,55 @@
         <LinearLayout
             android:id="@+id/dock"
             android:layout_width="match_parent"
-            android:layout_height="100dp"
+            android:layout_height="95dp"
             android:layout_alignParentBottom="true"
-            android:layout_marginBottom="20dp"
+            android:layout_marginLeft="0dp"
+            android:layout_marginRight="0dp"
+            android:layout_marginBottom="30dp"
+            android:background="@drawable/dock_background"
             android:gravity="center"
-            android:orientation="horizontal">
+            android:orientation="horizontal"
+            android:paddingLeft="32dp"
+            android:paddingRight="32dp">
 
-            <ImageView android:id="@+id/dock_1" android:layout_width="64dp" android:layout_height="64dp" android:layout_marginHorizontal="12dp" android:background="@drawable/icon_background" android:padding="12dp" android:scaleType="fitCenter" />
-            <ImageView android:id="@+id/dock_2" android:layout_width="64dp" android:layout_height="64dp" android:layout_marginHorizontal="12dp" android:background="@drawable/icon_background" android:padding="12dp" android:scaleType="fitCenter" />
-            <ImageView android:id="@+id/dock_3" android:layout_width="64dp" android:layout_height="64dp" android:layout_marginHorizontal="12dp" android:background="@drawable/icon_background" android:padding="12dp" android:scaleType="fitCenter" />
-            <ImageView android:id="@+id/dock_4" android:layout_width="64dp" android:layout_height="64dp" android:layout_marginHorizontal="12dp" android:background="@drawable/icon_background" android:padding="12dp" android:scaleType="fitCenter" />
+            <ImageView
+                android:id="@+id/dock_1"
+                android:layout_width="68dp"
+                android:layout_height="68dp"
+                android:scaleType="centerCrop" />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
+
+            <ImageView
+                android:id="@+id/dock_2"
+                android:layout_width="68dp"
+                android:layout_height="68dp"
+                android:scaleType="centerCrop" />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
+
+            <ImageView
+                android:id="@+id/dock_3"
+                android:layout_width="68dp"
+                android:layout_height="68dp"
+                android:scaleType="centerCrop" />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
+
+            <ImageView
+                android:id="@+id/dock_4"
+                android:layout_width="68dp"
+                android:layout_height="68dp"
+                android:scaleType="centerCrop" />
         </LinearLayout>
     </RelativeLayout>
 
@@ -117,7 +189,8 @@
             android:hint="Search apps or web..."
             android:textColor="#FFFFFF"
             android:textColorHint="#CCCCCC"
-            android:paddingHorizontal="20dp"
+            android:paddingLeft="20dp"
+            android:paddingRight="20dp"
             android:imeOptions="actionSearch"
             android:inputType="text" />
 

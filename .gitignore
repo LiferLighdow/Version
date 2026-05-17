@@ -13,3 +13,14 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# APKs
+*.apk
+app/release/
+
+# Build folders
+/build
+/*/build
+
+# Scripts
+push.bat
