@@ -294,7 +294,13 @@ public class MainActivity extends Activity {
                 showHideAppsDialog();
             } else if (which == 2) {
                 try {
-                    Intent intent = new Intent(Settings.ACTION_HOME_SETTINGS);
+                    Intent intent;
+                    if (android.os.Build.VERSION.SDK_INT >= 24) {
+                        intent = new Intent(Settings.ACTION_HOME_SETTINGS);
+                    } else {
+                        intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                        intent.setData(Uri.parse("package:" + getPackageName()));
+                    }
                     intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                     startActivity(intent);
                 } catch (Exception e) {
@@ -339,8 +345,9 @@ public class MainActivity extends Activity {
             @Override public View getView(int p, View v, ViewGroup parent) {
                 if (v == null) v = getLayoutInflater().inflate(R.layout.item_app, parent, false);
                 AppInfo app = appsForDialog.get(p);
-                ((TextView) v.findViewById(R.id.item_label)).setText(app.label);
-                ((TextView) v.findViewById(R.id.item_label)).setTextColor(android.graphics.Color.BLACK);
+                TextView label = v.findViewById(R.id.item_label);
+                label.setText(app.label);
+                label.setTextColor(android.graphics.Color.WHITE);
                 ImageView icon = v.findViewById(R.id.item_icon);
                 icon.setImageDrawable(app.icon);
                 icon.setOutlineProvider(new ViewOutlineProvider() {
@@ -515,7 +522,10 @@ public class MainActivity extends Activity {
         };
         homeSearch.setOnClickListener(clickListener);
         homeSearch.setOnFocusChangeListener((v, hasFocus) -> {
-            if (hasFocus && !isSearchVisible) showSearch();
+            if (hasFocus && !isSearchVisible) {
+                showSearch();
+                v.clearFocus(); // 轉移焦點到 searchInput 後，清空主畫面的焦點
+            }
         });
 
         TextView.OnEditorActionListener searchListener = (v, actionId, event) -> {
@@ -524,7 +534,9 @@ public class MainActivity extends Activity {
                 if (!query.isEmpty()) {
                     if (filteredApps.isEmpty()) {
                         try {
-                            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=" + query));
+                            // 使用 Uri.encode 確保中文與空格能正確跳轉至瀏覽器
+                            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=" + Uri.encode(query)));
+                            intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                             startActivity(intent);
                         } catch (Exception e) {
                             e.printStackTrace();
@@ -636,7 +648,7 @@ public class MainActivity extends Activity {
                 ImageView icon = convertView.findViewById(R.id.item_icon);
                 
                 label.setText(app.label);
-                label.setTextColor(android.graphics.Color.BLACK); // 對話框背景通常是亮的，字改回黑色
+                label.setTextColor(android.graphics.Color.WHITE);
                 icon.setImageDrawable(app.icon);
 
                 // 設定選單圖示的原生圓角
