@@ -6,12 +6,25 @@ import android.view.ViewOutlineProvider;
 import android.app.ActivityManager;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.Color;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.Paint;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffXfermode;
+import android.graphics.RectF;
+import android.graphics.Matrix;
+import android.view.ScaleGestureDetector;
 import android.os.Bundle;
 import android.os.Environment;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
@@ -27,6 +40,7 @@ import android.widget.BaseAdapter;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.ImageView;
+import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.TextView;
 import android.app.admin.DevicePolicyManager;
@@ -66,6 +80,7 @@ public class MainActivity extends Activity {
     private final List<AppInfo> allApps = new ArrayList<>();
     private final List<AppInfo> filteredApps = new ArrayList<>();
     private AppAdapter adapter;
+    private int currentTextColor = 0xFFFFFFFF;
     private GestureDetector gestureDetector;
     private DevicePolicyManager devicePolicyManager;
     private ComponentName adminComponent;
@@ -86,7 +101,12 @@ public class MainActivity extends Activity {
     private static final String PREF_DOCK_PREFIX = "dock_pkg_";
     private static final String PREF_BLACK_MODE = "black_mode";
     private static final String PREF_HIDDEN_APPS = "hidden_apps";
-    private static final int DOCK_COUNT = 4;
+    private static final String PREF_THEME = "ui_theme";
+    private static final String PREF_CUSTOM_ICON_PREFIX = "custom_icon_";
+    private static final String PREF_CUSTOM_LABEL_PREFIX = "custom_label_";
+    private static final int DOCK_COUNT = 5;
+    private static final int REQUEST_PICK_IMAGE = 1001;
+    private String pendingPackageName = null;
 
     // 斤斤計較優化：重複使用物件避免 GC
     private final SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm", Locale.getDefault());
@@ -133,11 +153,13 @@ public class MainActivity extends Activity {
         android.util.DisplayMetrics metrics = new android.util.DisplayMetrics();
         getWindowManager().getDefaultDisplay().getMetrics(metrics);
         
-        // 計算理想的圖示大小：螢幕寬度的 16.5%
+        int theme = prefs.getInt(PREF_THEME, 0);
+        // 計算理想的圖示大小：AOSP 風格更小一些 (13% vs 16.5%)
         int screenWidth = metrics.widthPixels;
-        int iconSize = (int) (screenWidth * 0.165);
+        float iconScale = (theme == 3) ? 0.13f : 0.165f;
+        int iconSize = (int) (screenWidth * iconScale);
         int dockHeight = (int) (iconSize * 1.4);
-        int searchHeight = (int) (metrics.density * 52); // 固定搜尋框高度感
+        int searchHeight = (int) (metrics.density * 52); 
         
         // 調整 Dock 高度
         View dock = findViewById(R.id.dock);
@@ -145,18 +167,18 @@ public class MainActivity extends Activity {
         dockParams.height = dockHeight;
         dock.setLayoutParams(dockParams);
         
-        // 調整 4 個 Dock 圖示的大小
-        int[] dockIds = {R.id.dock_1, R.id.dock_2, R.id.dock_3, R.id.dock_4};
+        // 調整 Dock 圖示的大小
+        int[] dockIds = {R.id.dock_1, R.id.dock_2, R.id.dock_3, R.id.dock_4, R.id.dock_5};
         final float cornerRadius = iconSize * 0.23f;
         
         for (int id : dockIds) {
             View v = findViewById(id);
+            if (v == null) continue;
             ViewGroup.LayoutParams p = v.getLayoutParams();
             p.width = iconSize;
             p.height = iconSize;
             v.setLayoutParams(p);
             
-            // 使用 ViewOutlineProvider 實現原生高效圓角裁切 (不依賴庫)
             v.setOutlineProvider(new ViewOutlineProvider() {
                 @Override
                 public void getOutline(View view, Outline outline) {
@@ -225,6 +247,7 @@ public class MainActivity extends Activity {
         });
         
         applyBackgroundMode();
+        applyTheme();
     }
 
     private void setupGestures() {
@@ -278,21 +301,23 @@ public class MainActivity extends Activity {
     public static class AdminReceiver extends android.app.admin.DeviceAdminReceiver {}
 
     private void showSettings() {
-        android.app.AlertDialog.Builder builder = new android.app.AlertDialog.Builder(this);
+        android.app.AlertDialog.Builder builder = getDialogBuilder();
         builder.setTitle("Settings");
         
         boolean isBlackMode = prefs.getBoolean(PREF_BLACK_MODE, false);
         String blackModeText = isBlackMode ? "Switch to Wallpaper Mode" : "Switch to Black Mode (AMOLED Save)";
         
-        String[] options = {blackModeText, "Hide Apps", "Set as Default Launcher"};
+        String[] options = {blackModeText, "Themes", "Hide Apps", "Set as Default Launcher"};
         
         builder.setItems(options, (dialog, which) -> {
             if (which == 0) {
                 prefs.edit().putBoolean(PREF_BLACK_MODE, !isBlackMode).apply();
                 applyBackgroundMode();
             } else if (which == 1) {
-                showHideAppsDialog();
+                showThemeDialog();
             } else if (which == 2) {
+                showHideAppsDialog();
+            } else if (which == 3) {
                 try {
                     Intent intent;
                     if (android.os.Build.VERSION.SDK_INT >= 24) {
@@ -313,6 +338,135 @@ public class MainActivity extends Activity {
             }
         });
         builder.show();
+    }
+
+    private void showThemeDialog() {
+        String[] themes = {"Default (Modern Glass)", "OLED Black", "Snow White", "AOSP Style"};
+        getDialogBuilder()
+                .setTitle("Select Theme")
+                .setItems(themes, (dialog, which) -> {
+                    prefs.edit().putInt(PREF_THEME, which).apply();
+                    applyTheme();
+                })
+                .show();
+    }
+
+    private void applyTheme() {
+        int theme = prefs.getInt(PREF_THEME, 0);
+        int textColor, secondaryTextColor, containerColor, strokeColor, searchStrokeColor, overlayColor;
+        float density = getResources().getDisplayMetrics().density;
+
+        if (theme == 3) { // AOSP Style
+            textColor = 0xFFFFFFFF;
+            secondaryTextColor = 0xFFCCCCCC;
+            containerColor = 0x44000000; // 淺黑色
+            strokeColor = 0x00000000; // AOSP Dock 無背景/邊框
+            searchStrokeColor = 0x00000000;
+            overlayColor = 0xEE000000;
+        } else if (theme == 1) { // OLED Black
+            textColor = 0xFFFFFFFF;
+            secondaryTextColor = 0xFF888888;
+            containerColor = 0xFF000000;
+            strokeColor = 0xFF333333;
+            searchStrokeColor = 0xFF444444;
+            overlayColor = 0xFF000000;
+        } else if (theme == 2) { // Snow White
+            textColor = 0xFF222222;
+            secondaryTextColor = 0xFF666666;
+            containerColor = 0xCCFFFFFF;
+            strokeColor = 0x44AAAAAA;
+            searchStrokeColor = 0x66888888;
+            overlayColor = 0xEEFFFFFF;
+        } else { // Default (0)
+            textColor = 0xFFFFFFFF;
+            secondaryTextColor = 0xFFCCCCCC;
+            containerColor = 0x22FFFFFF;
+            strokeColor = 0x44FFFFFF;
+            searchStrokeColor = 0x88FFFFFF;
+            overlayColor = 0xEE000000;
+        }
+
+        // Apply to TextViews
+        currentTextColor = textColor;
+        timeText.setTextColor(textColor);
+        dateText.setTextColor(textColor);
+        cpuStat.setTextColor(textColor);
+        ramStat.setTextColor(textColor);
+        romStat.setTextColor(textColor);
+        searchInput.setTextColor(textColor);
+        searchInput.setHintTextColor(secondaryTextColor);
+        homeSearch.setTextColor(textColor);
+        homeSearch.setHintTextColor(secondaryTextColor);
+
+        // Update Search Icon Tint
+        Drawable[] drawables = homeSearch.getCompoundDrawables();
+        if (drawables[0] != null) {
+            drawables[0].mutate().setTint(textColor);
+        }
+        
+        // Search Container Overlay
+        searchContainer.setBackgroundColor(overlayColor);
+
+        // Adjust Clock Container Position
+        View clockContainer = findViewById(R.id.clock_container);
+        ViewGroup.MarginLayoutParams clockParams = (ViewGroup.MarginLayoutParams) clockContainer.getLayoutParams();
+        clockParams.topMargin = (int) (density * (theme == 3 ? 120 : 80));
+        clockContainer.setLayoutParams(clockParams);
+
+        // Toggle Stats Widget
+        LinearLayout statsWidget = findViewById(R.id.stats_widget);
+        statsWidget.setVisibility(theme == 3 ? View.GONE : View.VISIBLE);
+
+        // Apply to Containers
+        applyViewStyle(statsWidget, containerColor, strokeColor, (int)(40 * density), (int)(1 * density));
+        applyViewStyle(homeSearch, containerColor, searchStrokeColor, (int)(25 * density), (int)(1.5 * density));
+        applyViewStyle(searchInput, containerColor, searchStrokeColor, (int)(25 * density), (int)(1.5 * density));
+        
+        // Dock handled specially for AOSP (no background)
+        View dockView = findViewById(R.id.dock);
+        if (theme == 3) {
+            dockView.setBackgroundColor(0x00000000);
+        } else {
+            applyViewStyle(dockView, containerColor, strokeColor, (int)(40 * density), (int)(1 * density));
+        }
+
+        // Toggle 5th icon for AOSP
+        findViewById(R.id.dock_5).setVisibility(theme == 3 ? View.VISIBLE : View.GONE);
+        findViewById(R.id.dock_spacer_4).setVisibility(theme == 3 ? View.VISIBLE : View.GONE);
+
+        // Update Stats Widget Separators
+        int separatorColor = (theme == 2) ? 0x44000000 : 0x44FFFFFF;
+        for (int i = 0; i < statsWidget.getChildCount(); i++) {
+            View child = statsWidget.getChildAt(i);
+            if (!(child instanceof TextView)) {
+                child.setBackgroundColor(separatorColor);
+            }
+        }
+
+        // Refresh layouts
+        adjustUiToScreen();
+        setupDock();
+        if (adapter != null) adapter.notifyDataSetChanged();
+    }
+
+    private void applyViewStyle(View v, int bgColor, int strokeColor, int radius, int strokeWidth) {
+        GradientDrawable gd = new GradientDrawable();
+        gd.setColor(bgColor);
+        gd.setCornerRadius(radius);
+        gd.setStroke(strokeWidth, strokeColor);
+        v.setBackground(gd);
+    }
+
+    private android.app.AlertDialog.Builder getDialogBuilder() {
+        int theme = prefs.getInt(PREF_THEME, 0);
+        int dialogTheme;
+        if (android.os.Build.VERSION.SDK_INT >= 22) {
+            dialogTheme = (theme == 2) ? android.R.style.Theme_DeviceDefault_Light_Dialog_Alert : android.R.style.Theme_DeviceDefault_Dialog_Alert;
+        } else {
+            // API 21 Fallback
+            dialogTheme = (theme == 2) ? android.R.style.Theme_Material_Light_Dialog_Alert : android.R.style.Theme_Material_Dialog_Alert;
+        }
+        return new android.app.AlertDialog.Builder(this, dialogTheme);
     }
 
     private void showHideAppsDialog() {
@@ -347,7 +501,7 @@ public class MainActivity extends Activity {
                 AppInfo app = appsForDialog.get(p);
                 TextView label = v.findViewById(R.id.item_label);
                 label.setText(app.label);
-                label.setTextColor(android.graphics.Color.WHITE);
+                label.setTextColor(currentTextColor);
                 ImageView icon = v.findViewById(R.id.item_icon);
                 icon.setImageDrawable(app.icon);
                 icon.setOutlineProvider(new ViewOutlineProvider() {
@@ -369,7 +523,7 @@ public class MainActivity extends Activity {
             adapter.notifyDataSetChanged();
         });
 
-        new android.app.AlertDialog.Builder(this)
+        getDialogBuilder()
             .setTitle("Hide Apps")
             .setView(listView)
             .setPositiveButton("Done", (dialog, which) -> {
@@ -393,6 +547,184 @@ public class MainActivity extends Activity {
         } else {
             root.setBackgroundColor(0x00000000); // 透明 (顯示壁紙)
         }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode == REQUEST_PICK_IMAGE && resultCode == RESULT_OK && data != null && pendingPackageName != null) {
+            showCropDialog(data.getData(), pendingPackageName);
+            pendingPackageName = null;
+        }
+    }
+
+    private void showCropDialog(Uri uri, String pkg) {
+        try {
+            // 預先載入圖片（縮放至螢幕大小以防 OOM）
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inJustDecodeBounds = true;
+            try (InputStream is = getContentResolver().openInputStream(uri)) {
+                BitmapFactory.decodeStream(is, null, options);
+            }
+            
+            int screenWidth = getResources().getDisplayMetrics().widthPixels;
+            options.inSampleSize = 1;
+            while (options.outWidth / options.inSampleSize > screenWidth * 2) options.inSampleSize *= 2;
+            options.inJustDecodeBounds = false;
+            
+            Bitmap sourceBmp;
+            try (InputStream is = getContentResolver().openInputStream(uri)) {
+                sourceBmp = BitmapFactory.decodeStream(is, null, options);
+            }
+            if (sourceBmp == null) return;
+
+            final Bitmap bmp = sourceBmp;
+            final Matrix matrix = new Matrix();
+            final float[] lastTouch = new float[2];
+            final float[] center = new float[2];
+            
+            // 建立一個互動式 View
+            View cropView = new View(this) {
+                private final Paint maskPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+                private final Paint borderPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+                private boolean initialCentered = false;
+
+                ScaleGestureDetector scaleDetector = new ScaleGestureDetector(MainActivity.this, new ScaleGestureDetector.OnScaleGestureListener() {
+                    @Override
+                    public boolean onScale(ScaleGestureDetector detector) {
+                        matrix.postScale(detector.getScaleFactor(), detector.getScaleFactor(), detector.getFocusX(), detector.getFocusY());
+                        invalidate();
+                        return true;
+                    }
+
+                    @Override
+                    public boolean onScaleBegin(ScaleGestureDetector detector) { return true; }
+                    @Override
+                    public void onScaleEnd(ScaleGestureDetector detector) { }
+                });
+
+                @Override
+                public boolean onTouchEvent(MotionEvent event) {
+                    scaleDetector.onTouchEvent(event);
+                    if (scaleDetector.isInProgress()) return true;
+                    
+                    switch (event.getAction()) {
+                        case MotionEvent.ACTION_DOWN:
+                            lastTouch[0] = event.getX();
+                            lastTouch[1] = event.getY();
+                            break;
+                        case MotionEvent.ACTION_MOVE:
+                            matrix.postTranslate(event.getX() - lastTouch[0], event.getY() - lastTouch[1]);
+                            lastTouch[0] = event.getX();
+                            lastTouch[1] = event.getY();
+                            invalidate();
+                            break;
+                    }
+                    return true;
+                }
+
+                @Override
+                protected void onDraw(Canvas canvas) {
+                    int w = getWidth();
+                    int h = getHeight();
+                    int size = (int)(w * 0.7f);
+                    int x = (w - size) / 2;
+                    int y = (h - size) / 2;
+
+                    // 初始化圖片位置：居中並縮放至適合大小
+                    if (!initialCentered && w > 0) {
+                        float scale = (float) size / Math.min(bmp.getWidth(), bmp.getHeight());
+                        matrix.setScale(scale, scale);
+                        matrix.postTranslate((w - bmp.getWidth() * scale) / 2f, (h - bmp.getHeight() * scale) / 2f);
+                        initialCentered = true;
+                    }
+
+                    canvas.drawBitmap(bmp, matrix, null);
+                    
+                    // 繪製遮罩 (上下左右四個矩形)
+                    maskPaint.setColor(0xAA000000);
+                    maskPaint.setStyle(Paint.Style.FILL);
+                    canvas.drawRect(0, 0, w, y, maskPaint); // 上
+                    canvas.drawRect(0, y + size, w, h, maskPaint); // 下
+                    canvas.drawRect(0, y, x, y + size, maskPaint); // 左
+                    canvas.drawRect(x + size, y, w, y + size, maskPaint); // 右
+                    
+                    // 繪製裁切框邊界
+                    borderPaint.setStyle(Paint.Style.STROKE);
+                    borderPaint.setColor(Color.WHITE);
+                    borderPaint.setStrokeWidth(3);
+                    canvas.drawRect(x, y, x + size, y + size, borderPaint);
+                    
+                    center[0] = x; center[1] = y;
+                }
+            };
+
+            getDialogBuilder()
+                .setTitle("Pan & Zoom to Crop")
+                .setView(cropView)
+                .setPositiveButton("Next", (dialog, which) -> {
+                    // 根據目前 Matrix 提取圖片
+                    showShapeSelection(bmp, matrix, (int)(cropView.getWidth() * 0.7f), center, pkg);
+                })
+                .setNegativeButton("Cancel", (dialog, which) -> bmp.recycle())
+                .show();
+                
+        } catch (Exception e) { e.printStackTrace(); }
+    }
+
+    private void showShapeSelection(Bitmap source, Matrix matrix, int cropSize, float[] center, String pkg) {
+        String[] shapes = {"Square", "Circle", "Rounded Square"};
+        getDialogBuilder()
+            .setTitle("Select Shape")
+            .setItems(shapes, (dialog, which) -> {
+                performFinalCrop(source, matrix, cropSize, center, which, pkg);
+                setupDock();
+                if (adapter != null) adapter.notifyDataSetChanged();
+            })
+            .show();
+    }
+
+    private void performFinalCrop(Bitmap source, Matrix matrix, int cropSize, float[] center, int shapeType, String pkg) {
+        try {
+            // 1. 建立裁切後的 Bitmap
+            Bitmap cropped = Bitmap.createBitmap(cropSize, cropSize, Bitmap.Config.ARGB_8888);
+            Canvas canvas = new Canvas(cropped);
+            
+            // 2. 套用 Matrix 繪製圖片到 cropped (需補償對話框中的偏移)
+            Matrix finalMatrix = new Matrix(matrix);
+            finalMatrix.postTranslate(-center[0], -center[1]);
+            canvas.drawBitmap(source, finalMatrix, new Paint(Paint.FILTER_BITMAP_FLAG));
+            
+            // 3. 套用形狀遮罩
+            Bitmap output = Bitmap.createBitmap(cropSize, cropSize, Bitmap.Config.ARGB_8888);
+            Canvas outputCanvas = new Canvas(output);
+            Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            RectF rect = new RectF(0, 0, cropSize, cropSize);
+            
+            if (shapeType == 1) outputCanvas.drawOval(rect, paint);
+            else if (shapeType == 2) outputCanvas.drawRoundRect(rect, cropSize * 0.2f, cropSize * 0.2f, paint);
+            else outputCanvas.drawRect(rect, paint);
+            
+            paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.SRC_IN));
+            outputCanvas.drawBitmap(cropped, 0, 0, paint);
+            
+            // 4. 縮放至 192px 儲存
+            int targetSize = (int) (getResources().getDisplayMetrics().density * 192);
+            Bitmap finalBmp = Bitmap.createScaledBitmap(output, targetSize, targetSize, true);
+            
+            File iconFile = new File(getFilesDir(), "icon_" + pkg.hashCode() + ".png");
+            try (FileOutputStream fos = new FileOutputStream(iconFile)) {
+                finalBmp.compress(Bitmap.CompressFormat.PNG, 90, fos);
+            }
+            
+            prefs.edit().putString(PREF_CUSTOM_ICON_PREFIX + pkg, iconFile.getAbsolutePath()).apply();
+            
+            // 釋放資源
+            source.recycle();
+            cropped.recycle();
+            output.recycle();
+            finalBmp.recycle();
+            
+        } catch (Exception e) { e.printStackTrace(); }
     }
 
     @Override
@@ -487,8 +819,11 @@ public class MainActivity extends Activity {
             String pkg = ri.activityInfo.packageName;
             if (hidden.contains(pkg)) continue;
             
+            String label = prefs.getString(PREF_CUSTOM_LABEL_PREFIX + pkg, null);
+            if (label == null) label = ri.loadLabel(pm).toString();
+            
             allApps.add(new AppInfo(
-                ri.loadLabel(pm).toString(),
+                label,
                 pkg,
                 ri.loadIcon(pm)
             ));
@@ -594,7 +929,7 @@ public class MainActivity extends Activity {
     }
 
     private void setupDock() {
-        String[] keywords = {"dialer", "mms", "browser", "camera"};
+        String[] keywords = {"dialer", "mms", "browser", "camera", "contacts"};
         for (int i = 0; i < DOCK_COUNT; i++) {
             final int index = i;
             String pkg = prefs.getString(PREF_DOCK_PREFIX + i, null);
@@ -602,6 +937,7 @@ public class MainActivity extends Activity {
             ImageView iv = findViewById(viewId);
 
             if (pkg == null || getPackageManager().getLaunchIntentForPackage(pkg) == null) {
+                // 優先使用關鍵字匹配預設 App
                 if (i < keywords.length) {
                     for (AppInfo app : allApps) {
                         if (app.packageName.toLowerCase().contains(keywords[i])) {
@@ -610,7 +946,8 @@ public class MainActivity extends Activity {
                         }
                     }
                 }
-                // 斤斤計較優化：避免使用 Collections.shuffle()
+                
+                // 如果沒匹配到，隨機選一個
                 if (pkg == null && !allApps.isEmpty()) {
                     pkg = allApps.get(random.nextInt(allApps.size())).packageName;
                 }
@@ -618,20 +955,87 @@ public class MainActivity extends Activity {
             }
 
             if (pkg != null) {
-                try {
-                    iv.setImageDrawable(getPackageManager().getApplicationIcon(pkg));
-                } catch (Exception e) {
-                    iv.setImageResource(android.R.drawable.sym_def_app_icon);
+                String customPath = prefs.getString(PREF_CUSTOM_ICON_PREFIX + pkg, null);
+                if (customPath != null && new File(customPath).exists()) {
+                    iv.setImageBitmap(BitmapFactory.decodeFile(customPath));
+                } else {
+                    try {
+                        iv.setImageDrawable(getPackageManager().getApplicationIcon(pkg));
+                    } catch (Exception e) {
+                        iv.setImageResource(android.R.drawable.sym_def_app_icon);
+                    }
                 }
                 final String finalPkg = pkg;
                 iv.setOnClickListener(v -> launchApp(finalPkg));
-                iv.setOnLongClickListener(v -> { showAppPickerForDock(index); return true; });
+                iv.setOnLongClickListener(v -> { showDockMenu(index, finalPkg); return true; });
             }
         }
     }
 
+    private void showDockMenu(int index, String pkg) {
+        String[] options = {"Change App", "Change Icon", "Reset Icon", "Change Name", "Reset Name"};
+        getDialogBuilder()
+            .setTitle("Dock Shortcut")
+            .setItems(options, (dialog, which) -> {
+                if (which == 0) showAppPickerForDock(index);
+                else if (which == 1) {
+                    pendingPackageName = pkg;
+                    Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+                    intent.setType("image/*");
+                    startActivityForResult(intent, REQUEST_PICK_IMAGE);
+                } else if (which == 2) {
+                    prefs.edit().remove(PREF_CUSTOM_ICON_PREFIX + pkg).apply();
+                    setupDock();
+                    if (adapter != null) adapter.notifyDataSetChanged();
+                } else if (which == 3) {
+                    showChangeNameDialog(pkg);
+                } else if (which == 4) {
+                    prefs.edit().remove(PREF_CUSTOM_LABEL_PREFIX + pkg).apply();
+                    loadApps();
+                    if (adapter != null) adapter.notifyDataSetChanged();
+                }
+            }).show();
+    }
+
+    private void showChangeNameDialog(String pkg) {
+        final EditText input = new EditText(this);
+        input.setSingleLine();
+        String currentLabel = "";
+        for (AppInfo app : allApps) {
+            if (app.packageName.equals(pkg)) {
+                currentLabel = app.label;
+                break;
+            }
+        }
+        input.setText(currentLabel);
+        input.setSelection(input.getText().length());
+        
+        // 增加一點邊距
+        LinearLayout container = new LinearLayout(this);
+        container.setOrientation(LinearLayout.VERTICAL);
+        int p = (int)(20 * getResources().getDisplayMetrics().density);
+        container.setPadding(p, p/2, p, 0);
+        container.addView(input);
+
+        getDialogBuilder()
+            .setTitle("Change Name")
+            .setView(container)
+            .setPositiveButton("OK", (dialog, which) -> {
+                String newName = input.getText().toString().trim();
+                if (newName.isEmpty()) {
+                    prefs.edit().remove(PREF_CUSTOM_LABEL_PREFIX + pkg).apply();
+                } else {
+                    prefs.edit().putString(PREF_CUSTOM_LABEL_PREFIX + pkg, newName).apply();
+                }
+                loadApps();
+                if (adapter != null) adapter.notifyDataSetChanged();
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
     private void showAppPickerForDock(int dockIndex) {
-        android.app.AlertDialog.Builder builder = new android.app.AlertDialog.Builder(this);
+        android.app.AlertDialog.Builder builder = getDialogBuilder();
         builder.setTitle("Pick an app");
 
         // 使用自定義 Adapter 顯示圖示
@@ -648,7 +1052,7 @@ public class MainActivity extends Activity {
                 ImageView icon = convertView.findViewById(R.id.item_icon);
                 
                 label.setText(app.label);
-                label.setTextColor(android.graphics.Color.WHITE);
+                label.setTextColor(currentTextColor);
                 icon.setImageDrawable(app.icon);
 
                 // 設定選單圖示的原生圓角
@@ -724,7 +1128,14 @@ public class MainActivity extends Activity {
             ImageView icon = v.findViewById(R.id.item_icon);
             
             label.setText(app.label);
-            icon.setImageDrawable(app.icon);
+            label.setTextColor(currentTextColor);
+
+            String customPath = prefs.getString(PREF_CUSTOM_ICON_PREFIX + app.packageName, null);
+            if (customPath != null && new File(customPath).exists()) {
+                icon.setImageBitmap(BitmapFactory.decodeFile(customPath));
+            } else {
+                icon.setImageDrawable(app.icon);
+            }
 
             // 搜尋列表中的圖示也套用原生圓角
             icon.setOutlineProvider(new ViewOutlineProvider() {
