@@ -4,7 +4,7 @@
 
 VersionOS is an ultra-minimalist, high-performance Android launcher designed for those who value speed, privacy, and technical purity. It delivers a modern smartphone experience within an impossible **45 KB** footprint.
 
-## 📦 The 45KB Engineering Marvel
+## 📦 The 50KB Engineering Marvel
 VersionOS is built with **zero external dependencies**. No AndroidX, no Material Components, no heavy libraries. By using pure Android SDK and hardware-accelerated native APIs, we've reduced the size by 99% compared to traditional launchers.
 
 ## ✨ Advanced Features
