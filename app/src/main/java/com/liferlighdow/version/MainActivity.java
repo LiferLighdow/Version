@@ -53,6 +53,7 @@ import android.content.SharedPreferences;
 import android.content.BroadcastReceiver;
 import android.content.IntentFilter;
 import android.net.Uri;
+import android.util.LruCache;
 
 import java.util.HashSet;
 import java.util.Set;
@@ -76,6 +77,7 @@ public class MainActivity extends Activity {
     private View searchContainer;
     private EditText searchInput, homeSearch;
     private ListView searchResults;
+    private LruCache<String, Drawable> iconCache;
     
     private final List<AppInfo> allApps = new ArrayList<>();
     private final List<AppInfo> filteredApps = new ArrayList<>();
@@ -89,6 +91,7 @@ public class MainActivity extends Activity {
     private final BroadcastReceiver packageReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
+            if (iconCache != null) iconCache.evictAll();
             loadApps();
             uiHandler.post(() -> {
                 setupDock();
@@ -102,6 +105,7 @@ public class MainActivity extends Activity {
     private static final String PREF_BLACK_MODE = "black_mode";
     private static final String PREF_HIDDEN_APPS = "hidden_apps";
     private static final String PREF_THEME = "ui_theme";
+    private static final String PREF_ADAPTIVE_ICON = "adaptive_icon";
     private static final String PREF_CUSTOM_ICON_PREFIX = "custom_icon_";
     private static final String PREF_CUSTOM_LABEL_PREFIX = "custom_label_";
     private static final int DOCK_COUNT = 5;
@@ -128,6 +132,27 @@ public class MainActivity extends Activity {
 
         setContentView(R.layout.activity_main);
         prefs = getSharedPreferences("launcher_prefs", MODE_PRIVATE);
+
+        // 相容性修復：將舊版 boolean 轉換為新版 int
+        try {
+            prefs.getInt(PREF_ADAPTIVE_ICON, 0);
+        } catch (ClassCastException e) {
+            boolean oldVal = prefs.getBoolean(PREF_ADAPTIVE_ICON, false);
+            prefs.edit().putInt(PREF_ADAPTIVE_ICON, oldVal ? 2 : 0).apply(); // 預設轉為方圓形
+        }
+
+        // 初始化圖示快取 (使用可用記憶體的 1/8)
+        int maxMemory = (int) (Runtime.getRuntime().maxMemory() / 1024);
+        int cacheSize = maxMemory / 8;
+        iconCache = new LruCache<String, Drawable>(cacheSize) {
+            @Override
+            protected int sizeOf(String key, Drawable drawable) {
+                if (drawable instanceof android.graphics.drawable.BitmapDrawable) {
+                    return ((android.graphics.drawable.BitmapDrawable) drawable).getBitmap().getByteCount() / 1024;
+                }
+                return 1;
+            }
+        };
         
         // 啟動後台執行緒處理 CPU 監測
         backgroundThread = new HandlerThread("StatsWorker");
@@ -307,17 +332,37 @@ public class MainActivity extends Activity {
         boolean isBlackMode = prefs.getBoolean(PREF_BLACK_MODE, false);
         String blackModeText = isBlackMode ? "Switch to Wallpaper Mode" : "Switch to Black Mode (AMOLED Save)";
         
-        String[] options = {blackModeText, "Themes", "Hide Apps", "Set as Default Launcher"};
+        // 僅在 Android 8.0 以前顯示 Adaptive Icon 選項
+        boolean isPreOreo = android.os.Build.VERSION.SDK_INT < 26;
+        int adaptiveMode = prefs.getInt(PREF_ADAPTIVE_ICON, 0); // 0: Off, 1: Circle, 2: Rounded
+        String adaptiveText = (adaptiveMode == 0) ? "Enable Adaptive Icons" : "Disable Adaptive Icons";
+
+        List<String> optionsList = new ArrayList<>();
+        optionsList.add(blackModeText);
+        optionsList.add("Themes");
+        if (isPreOreo) optionsList.add(adaptiveText);
+        optionsList.add("Hide Apps");
+        optionsList.add("Set as Default Launcher");
+        
+        String[] options = optionsList.toArray(new String[0]);
         
         builder.setItems(options, (dialog, which) -> {
-            if (which == 0) {
+            String selected = options[which];
+            if (selected.equals(blackModeText)) {
                 prefs.edit().putBoolean(PREF_BLACK_MODE, !isBlackMode).apply();
                 applyBackgroundMode();
-            } else if (which == 1) {
+            } else if (selected.equals("Themes")) {
                 showThemeDialog();
-            } else if (which == 2) {
+            } else if (selected.equals(adaptiveText)) {
+                if (adaptiveMode == 0) {
+                    showAdaptiveShapeDialog();
+                } else {
+                    prefs.edit().putInt(PREF_ADAPTIVE_ICON, 0).apply();
+                    refreshIcons();
+                }
+            } else if (selected.equals("Hide Apps")) {
                 showHideAppsDialog();
-            } else if (which == 3) {
+            } else if (selected.equals("Set as Default Launcher")) {
                 try {
                     Intent intent;
                     if (android.os.Build.VERSION.SDK_INT >= 24) {
@@ -338,6 +383,23 @@ public class MainActivity extends Activity {
             }
         });
         builder.show();
+    }
+
+    private void showAdaptiveShapeDialog() {
+        String[] shapes = {"Circle", "Rounded Square"};
+        getDialogBuilder()
+            .setTitle("Select Shape")
+            .setItems(shapes, (dialog, which) -> {
+                prefs.edit().putInt(PREF_ADAPTIVE_ICON, which + 1).apply();
+                refreshIcons();
+            })
+            .show();
+    }
+
+    private void refreshIcons() {
+        if (iconCache != null) iconCache.evictAll();
+        setupDock();
+        if (adapter != null) adapter.notifyDataSetChanged();
     }
 
     private void showThemeDialog() {
@@ -457,6 +519,76 @@ public class MainActivity extends Activity {
         v.setBackground(gd);
     }
 
+    private Drawable getAppIcon(String pkg) {
+        Drawable cached = iconCache.get(pkg);
+        if (cached != null) return cached;
+
+        Drawable finalIcon = null;
+        String customPath = prefs.getString(PREF_CUSTOM_ICON_PREFIX + pkg, null);
+
+        try {
+            if (customPath != null && new File(customPath).exists()) {
+                BitmapFactory.Options options = new BitmapFactory.Options();
+                // 優先使用 RGB_565 減少一半記憶體，且 Launcher 圖示通常不需極高精細度
+                options.inPreferredConfig = Bitmap.Config.RGB_565;
+                Bitmap bmp = BitmapFactory.decodeFile(customPath, options);
+                if (bmp != null) {
+                    finalIcon = new android.graphics.drawable.BitmapDrawable(getResources(), bmp);
+                }
+            }
+
+            if (finalIcon == null) {
+                finalIcon = getPackageManager().getApplicationIcon(pkg);
+            }
+
+            // Fake Adaptive Icon 處理
+            int adaptiveMode = prefs.getInt(PREF_ADAPTIVE_ICON, 0);
+            if (adaptiveMode != 0) {
+                finalIcon = wrapInAdaptive(finalIcon, adaptiveMode);
+            }
+        } catch (Exception e) {
+            finalIcon = getResources().getDrawable(android.R.drawable.sym_def_app_icon);
+        }
+
+        if (finalIcon != null) {
+            iconCache.put(pkg, finalIcon);
+        }
+        return finalIcon;
+    }
+
+    private Drawable wrapInAdaptive(Drawable original, int mode) {
+        if (original == null) return null;
+        
+        // 取得標準尺寸 (以 48dp 為基準，可隨螢幕密度調整)
+        int size = (int) (getResources().getDisplayMetrics().density * 52);
+        Bitmap output = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(output);
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        // 根據主題選擇底板顏色
+        int theme = prefs.getInt(PREF_THEME, 0);
+        int bgColor;
+        if (theme == 1) bgColor = 0xFF222222;      // OLED: 深灰
+        else if (theme == 2) bgColor = 0xFFF0F0F0; // Snow: 淺灰
+        else if (theme == 3) bgColor = 0xFFFFFFFF; // AOSP: 純白
+        else bgColor = 0x66FFFFFF;                 // Default: 磨砂白
+
+        paint.setColor(bgColor);
+        if (mode == 1) { // Circle
+            canvas.drawCircle(size / 2f, size / 2f, size / 2f, paint);
+        } else { // Rounded Square (Squircle)
+            float radius = size * 0.23f;
+            canvas.drawRoundRect(new RectF(0, 0, size, size), radius, radius, paint);
+        }
+
+        // 縮放原始 Icon (約 62%) 並置中疊加
+        int inset = (int) (size * 0.19f);
+        original.setBounds(inset, inset, size - inset, size - inset);
+        original.draw(canvas);
+
+        return new android.graphics.drawable.BitmapDrawable(getResources(), output);
+    }
+
     private android.app.AlertDialog.Builder getDialogBuilder() {
         int theme = prefs.getInt(PREF_THEME, 0);
         int dialogTheme;
@@ -480,8 +612,7 @@ public class MainActivity extends Activity {
         for (ResolveInfo ri : allInstalledRI) {
             appsForDialog.add(new AppInfo(
                 ri.loadLabel(pm).toString(),
-                ri.activityInfo.packageName,
-                ri.loadIcon(pm)
+                ri.activityInfo.packageName
             ));
         }
 
@@ -503,7 +634,7 @@ public class MainActivity extends Activity {
                 label.setText(app.label);
                 label.setTextColor(currentTextColor);
                 ImageView icon = v.findViewById(R.id.item_icon);
-                icon.setImageDrawable(app.icon);
+                icon.setImageDrawable(getAppIcon(app.packageName));
                 icon.setOutlineProvider(new ViewOutlineProvider() {
                     @Override public void getOutline(View view, Outline outline) {
                         outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), view.getHeight() * 0.2f);
@@ -717,6 +848,7 @@ public class MainActivity extends Activity {
             }
             
             prefs.edit().putString(PREF_CUSTOM_ICON_PREFIX + pkg, iconFile.getAbsolutePath()).apply();
+            if (iconCache != null) iconCache.remove(pkg);
             
             // 釋放資源
             source.recycle();
@@ -822,11 +954,7 @@ public class MainActivity extends Activity {
             String label = prefs.getString(PREF_CUSTOM_LABEL_PREFIX + pkg, null);
             if (label == null) label = ri.loadLabel(pm).toString();
             
-            allApps.add(new AppInfo(
-                label,
-                pkg,
-                ri.loadIcon(pm)
-            ));
+            allApps.add(new AppInfo(label, pkg));
         }
     }
 
@@ -955,16 +1083,7 @@ public class MainActivity extends Activity {
             }
 
             if (pkg != null) {
-                String customPath = prefs.getString(PREF_CUSTOM_ICON_PREFIX + pkg, null);
-                if (customPath != null && new File(customPath).exists()) {
-                    iv.setImageBitmap(BitmapFactory.decodeFile(customPath));
-                } else {
-                    try {
-                        iv.setImageDrawable(getPackageManager().getApplicationIcon(pkg));
-                    } catch (Exception e) {
-                        iv.setImageResource(android.R.drawable.sym_def_app_icon);
-                    }
-                }
+                iv.setImageDrawable(getAppIcon(pkg));
                 final String finalPkg = pkg;
                 iv.setOnClickListener(v -> launchApp(finalPkg));
                 iv.setOnLongClickListener(v -> { showDockMenu(index, finalPkg); return true; });
@@ -985,6 +1104,7 @@ public class MainActivity extends Activity {
                     startActivityForResult(intent, REQUEST_PICK_IMAGE);
                 } else if (which == 2) {
                     prefs.edit().remove(PREF_CUSTOM_ICON_PREFIX + pkg).apply();
+                    if (iconCache != null) iconCache.remove(pkg);
                     setupDock();
                     if (adapter != null) adapter.notifyDataSetChanged();
                 } else if (which == 3) {
@@ -1053,7 +1173,7 @@ public class MainActivity extends Activity {
                 
                 label.setText(app.label);
                 label.setTextColor(currentTextColor);
-                icon.setImageDrawable(app.icon);
+                icon.setImageDrawable(getAppIcon(app.packageName));
 
                 // 設定選單圖示的原生圓角
                 icon.setOutlineProvider(new ViewOutlineProvider() {
@@ -1111,8 +1231,7 @@ public class MainActivity extends Activity {
 
     private static class AppInfo {
         String label, packageName;
-        Drawable icon;
-        AppInfo(String l, String p, Drawable i) { label = l; packageName = p; icon = i; }
+        AppInfo(String l, String p) { label = l; packageName = p; }
     }
 
     private class AppAdapter extends BaseAdapter {
@@ -1130,12 +1249,7 @@ public class MainActivity extends Activity {
             label.setText(app.label);
             label.setTextColor(currentTextColor);
 
-            String customPath = prefs.getString(PREF_CUSTOM_ICON_PREFIX + app.packageName, null);
-            if (customPath != null && new File(customPath).exists()) {
-                icon.setImageBitmap(BitmapFactory.decodeFile(customPath));
-            } else {
-                icon.setImageDrawable(app.icon);
-            }
+            icon.setImageDrawable(getAppIcon(app.packageName));
 
             // 搜尋列表中的圖示也套用原生圓角
             icon.setOutlineProvider(new ViewOutlineProvider() {
