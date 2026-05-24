@@ -111,6 +111,7 @@ public class MainActivity extends Activity {
     private static final int DOCK_COUNT = 5;
     private static final int REQUEST_PICK_IMAGE = 1001;
     private String pendingPackageName = null;
+    private String pendingClassName = null;
 
     // 斤斤計較優化：重複使用物件避免 GC
     private final SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm", Locale.getDefault());
@@ -519,8 +520,9 @@ public class MainActivity extends Activity {
         v.setBackground(gd);
     }
 
-    private Drawable getAppIcon(String pkg) {
-        Drawable cached = iconCache.get(pkg);
+    private Drawable getAppIcon(String pkg, String cls) {
+        String cacheKey = (cls != null) ? pkg + "/" + cls : pkg;
+        Drawable cached = iconCache.get(cacheKey);
         if (cached != null) return cached;
 
         Drawable finalIcon = null;
@@ -529,7 +531,6 @@ public class MainActivity extends Activity {
         try {
             if (customPath != null && new File(customPath).exists()) {
                 BitmapFactory.Options options = new BitmapFactory.Options();
-                // 優先使用 RGB_565 減少一半記憶體，且 Launcher 圖示通常不需極高精細度
                 options.inPreferredConfig = Bitmap.Config.RGB_565;
                 Bitmap bmp = BitmapFactory.decodeFile(customPath, options);
                 if (bmp != null) {
@@ -538,21 +539,26 @@ public class MainActivity extends Activity {
             }
 
             if (finalIcon == null) {
-                finalIcon = getPackageManager().getApplicationIcon(pkg);
+                if (cls != null) {
+                    finalIcon = getPackageManager().getActivityIcon(new ComponentName(pkg, cls));
+                } else {
+                    finalIcon = getPackageManager().getApplicationIcon(pkg);
+                }
             }
 
-            // Fake Adaptive Icon 處理
             int adaptiveMode = prefs.getInt(PREF_ADAPTIVE_ICON, 0);
             if (adaptiveMode != 0) {
                 finalIcon = wrapInAdaptive(finalIcon, adaptiveMode);
             }
         } catch (Exception e) {
+            try { finalIcon = getPackageManager().getApplicationIcon(pkg); } catch (Exception ignored) {}
+        }
+
+        if (finalIcon == null) {
             finalIcon = getResources().getDrawable(android.R.drawable.sym_def_app_icon);
         }
 
-        if (finalIcon != null) {
-            iconCache.put(pkg, finalIcon);
-        }
+        iconCache.put(cacheKey, finalIcon);
         return finalIcon;
     }
 
@@ -612,7 +618,8 @@ public class MainActivity extends Activity {
         for (ResolveInfo ri : allInstalledRI) {
             appsForDialog.add(new AppInfo(
                 ri.loadLabel(pm).toString(),
-                ri.activityInfo.packageName
+                ri.activityInfo.packageName,
+                ri.activityInfo.name
             ));
         }
 
@@ -634,7 +641,7 @@ public class MainActivity extends Activity {
                 label.setText(app.label);
                 label.setTextColor(currentTextColor);
                 ImageView icon = v.findViewById(R.id.item_icon);
-                icon.setImageDrawable(getAppIcon(app.packageName));
+                icon.setImageDrawable(getAppIcon(app.packageName, app.className));
                 icon.setOutlineProvider(new ViewOutlineProvider() {
                     @Override public void getOutline(View view, Outline outline) {
                         outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), view.getHeight() * 0.2f);
@@ -683,24 +690,27 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         if (requestCode == REQUEST_PICK_IMAGE && resultCode == RESULT_OK && data != null && pendingPackageName != null) {
-            showCropDialog(data.getData(), pendingPackageName);
+            showCropDialog(data.getData(), pendingPackageName, pendingClassName);
             pendingPackageName = null;
+            pendingClassName = null;
         }
     }
 
-    private void showCropDialog(Uri uri, String pkg) {
+    private void showCropDialog(Uri uri, final String pkg, final String cls) {
         try {
-            // 預先載入圖片（縮放至螢幕大小以防 OOM）
+            // 1. 採樣縮放：讀取圖片尺寸
             BitmapFactory.Options options = new BitmapFactory.Options();
             options.inJustDecodeBounds = true;
             try (InputStream is = getContentResolver().openInputStream(uri)) {
                 BitmapFactory.decodeStream(is, null, options);
             }
             
+            // 2. 計算採樣率，防止 4K 等大圖導致 OOM
             int screenWidth = getResources().getDisplayMetrics().widthPixels;
             options.inSampleSize = 1;
             while (options.outWidth / options.inSampleSize > screenWidth * 2) options.inSampleSize *= 2;
             options.inJustDecodeBounds = false;
+            options.inPreferredConfig = Bitmap.Config.RGB_565; // 節省記憶體
             
             Bitmap sourceBmp;
             try (InputStream is = getContentResolver().openInputStream(uri)) {
@@ -713,7 +723,6 @@ public class MainActivity extends Activity {
             final float[] lastTouch = new float[2];
             final float[] center = new float[2];
             
-            // 建立一個互動式 View
             View cropView = new View(this) {
                 private final Paint maskPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
                 private final Paint borderPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -726,18 +735,14 @@ public class MainActivity extends Activity {
                         invalidate();
                         return true;
                     }
-
-                    @Override
-                    public boolean onScaleBegin(ScaleGestureDetector detector) { return true; }
-                    @Override
-                    public void onScaleEnd(ScaleGestureDetector detector) { }
+                    @Override public boolean onScaleBegin(ScaleGestureDetector detector) { return true; }
+                    @Override public void onScaleEnd(ScaleGestureDetector detector) { }
                 });
 
                 @Override
                 public boolean onTouchEvent(MotionEvent event) {
                     scaleDetector.onTouchEvent(event);
                     if (scaleDetector.isInProgress()) return true;
-                    
                     switch (event.getAction()) {
                         case MotionEvent.ACTION_DOWN:
                             lastTouch[0] = event.getX();
@@ -755,36 +760,25 @@ public class MainActivity extends Activity {
 
                 @Override
                 protected void onDraw(Canvas canvas) {
-                    int w = getWidth();
-                    int h = getHeight();
+                    int w = getWidth(); int h = getHeight();
                     int size = (int)(w * 0.7f);
-                    int x = (w - size) / 2;
-                    int y = (h - size) / 2;
-
-                    // 初始化圖片位置：居中並縮放至適合大小
+                    int x = (w - size) / 2; int y = (h - size) / 2;
                     if (!initialCentered && w > 0) {
                         float scale = (float) size / Math.min(bmp.getWidth(), bmp.getHeight());
                         matrix.setScale(scale, scale);
                         matrix.postTranslate((w - bmp.getWidth() * scale) / 2f, (h - bmp.getHeight() * scale) / 2f);
                         initialCentered = true;
                     }
-
                     canvas.drawBitmap(bmp, matrix, null);
-                    
-                    // 繪製遮罩 (上下左右四個矩形)
                     maskPaint.setColor(0xAA000000);
-                    maskPaint.setStyle(Paint.Style.FILL);
-                    canvas.drawRect(0, 0, w, y, maskPaint); // 上
-                    canvas.drawRect(0, y + size, w, h, maskPaint); // 下
-                    canvas.drawRect(0, y, x, y + size, maskPaint); // 左
-                    canvas.drawRect(x + size, y, w, y + size, maskPaint); // 右
-                    
-                    // 繪製裁切框邊界
+                    canvas.drawRect(0, 0, w, y, maskPaint);
+                    canvas.drawRect(0, y + size, w, h, maskPaint);
+                    canvas.drawRect(0, y, x, y + size, maskPaint);
+                    canvas.drawRect(x + size, y, w, y + size, maskPaint);
                     borderPaint.setStyle(Paint.Style.STROKE);
                     borderPaint.setColor(Color.WHITE);
                     borderPaint.setStrokeWidth(3);
                     canvas.drawRect(x, y, x + size, y + size, borderPaint);
-                    
                     center[0] = x; center[1] = y;
                 }
             };
@@ -792,40 +786,34 @@ public class MainActivity extends Activity {
             getDialogBuilder()
                 .setTitle("Pan & Zoom to Crop")
                 .setView(cropView)
-                .setPositiveButton("Next", (dialog, which) -> {
-                    // 根據目前 Matrix 提取圖片
-                    showShapeSelection(bmp, matrix, (int)(cropView.getWidth() * 0.7f), center, pkg);
-                })
+                .setPositiveButton("Next", (dialog, which) -> showShapeSelection(bmp, matrix, (int)(cropView.getWidth() * 0.7f), center, pkg, cls))
                 .setNegativeButton("Cancel", (dialog, which) -> bmp.recycle())
+                .setOnCancelListener(dialog -> bmp.recycle())
                 .show();
-                
         } catch (Exception e) { e.printStackTrace(); }
     }
 
-    private void showShapeSelection(Bitmap source, Matrix matrix, int cropSize, float[] center, String pkg) {
+    private void showShapeSelection(final Bitmap source, final Matrix matrix, final int cropSize, final float[] center, final String pkg, final String cls) {
         String[] shapes = {"Square", "Circle", "Rounded Square"};
         getDialogBuilder()
             .setTitle("Select Shape")
             .setItems(shapes, (dialog, which) -> {
-                performFinalCrop(source, matrix, cropSize, center, which, pkg);
+                performFinalCrop(source, matrix, cropSize, center, which, pkg, cls);
                 setupDock();
                 if (adapter != null) adapter.notifyDataSetChanged();
             })
+            .setOnCancelListener(dialog -> source.recycle())
             .show();
     }
 
-    private void performFinalCrop(Bitmap source, Matrix matrix, int cropSize, float[] center, int shapeType, String pkg) {
+    private void performFinalCrop(Bitmap source, Matrix matrix, int cropSize, float[] center, int shapeType, String pkg, String cls) {
         try {
-            // 1. 建立裁切後的 Bitmap
             Bitmap cropped = Bitmap.createBitmap(cropSize, cropSize, Bitmap.Config.ARGB_8888);
             Canvas canvas = new Canvas(cropped);
-            
-            // 2. 套用 Matrix 繪製圖片到 cropped (需補償對話框中的偏移)
             Matrix finalMatrix = new Matrix(matrix);
             finalMatrix.postTranslate(-center[0], -center[1]);
             canvas.drawBitmap(source, finalMatrix, new Paint(Paint.FILTER_BITMAP_FLAG));
             
-            // 3. 套用形狀遮罩
             Bitmap output = Bitmap.createBitmap(cropSize, cropSize, Bitmap.Config.ARGB_8888);
             Canvas outputCanvas = new Canvas(output);
             Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -838,24 +826,23 @@ public class MainActivity extends Activity {
             paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.SRC_IN));
             outputCanvas.drawBitmap(cropped, 0, 0, paint);
             
-            // 4. 縮放至 192px 儲存
             int targetSize = (int) (getResources().getDisplayMetrics().density * 192);
             Bitmap finalBmp = Bitmap.createScaledBitmap(output, targetSize, targetSize, true);
             
-            File iconFile = new File(getFilesDir(), "icon_" + pkg.hashCode() + ".png");
+            String iconKey = pkg + (cls != null ? "_" + cls : "");
+            File iconFile = new File(getFilesDir(), "icon_" + iconKey.hashCode() + ".png");
             try (FileOutputStream fos = new FileOutputStream(iconFile)) {
                 finalBmp.compress(Bitmap.CompressFormat.PNG, 90, fos);
             }
             
-            prefs.edit().putString(PREF_CUSTOM_ICON_PREFIX + pkg, iconFile.getAbsolutePath()).apply();
-            if (iconCache != null) iconCache.remove(pkg);
+            String cacheKey = (cls != null) ? pkg + "/" + cls : pkg;
+            prefs.edit().putString(PREF_CUSTOM_ICON_PREFIX + cacheKey, iconFile.getAbsolutePath()).apply();
+            if (iconCache != null) iconCache.remove(cacheKey);
             
-            // 釋放資源
             source.recycle();
             cropped.recycle();
             output.recycle();
             finalBmp.recycle();
-            
         } catch (Exception e) { e.printStackTrace(); }
     }
 
@@ -939,30 +926,37 @@ public class MainActivity extends Activity {
     }
 
     private void loadApps() {
-        PackageManager pm = getPackageManager();
-        Intent i = new Intent(Intent.ACTION_MAIN, null);
-        i.addCategory(Intent.CATEGORY_LAUNCHER);
-        List<ResolveInfo> availableActivities = pm.queryIntentActivities(i, 0);
-        
-        Set<String> hidden = prefs.getStringSet(PREF_HIDDEN_APPS, new HashSet<>());
-        
-        allApps.clear();
-        for (ResolveInfo ri : availableActivities) {
-            String pkg = ri.activityInfo.packageName;
-            if (hidden.contains(pkg)) continue;
+        if (backgroundHandler == null) return;
+        backgroundHandler.post(() -> {
+            PackageManager pm = getPackageManager();
+            Intent i = new Intent(Intent.ACTION_MAIN, null);
+            i.addCategory(Intent.CATEGORY_LAUNCHER);
+            List<ResolveInfo> availableActivities = pm.queryIntentActivities(i, 0);
+            Set<String> hidden = prefs.getStringSet(PREF_HIDDEN_APPS, new HashSet<>());
             
-            String label = prefs.getString(PREF_CUSTOM_LABEL_PREFIX + pkg, null);
-            if (label == null) label = ri.loadLabel(pm).toString();
-            
-            allApps.add(new AppInfo(label, pkg));
-        }
+            final List<AppInfo> newList = new ArrayList<>();
+            for (ResolveInfo ri : availableActivities) {
+                String pkg = ri.activityInfo.packageName;
+                String cls = ri.activityInfo.name;
+                if (hidden.contains(pkg)) continue;
+                String label = prefs.getString(PREF_CUSTOM_LABEL_PREFIX + pkg, null);
+                if (label == null) label = ri.loadLabel(pm).toString();
+                newList.add(new AppInfo(label, pkg, cls));
+            }
+            uiHandler.post(() -> {
+                allApps.clear();
+                allApps.addAll(newList);
+                if (adapter != null) adapter.notifyDataSetChanged();
+            });
+        });
     }
 
     private void setupSearch() {
         adapter = new AppAdapter();
         searchResults.setAdapter(adapter);
         searchResults.setOnItemClickListener((parent, view, position, id) -> {
-            launchApp(filteredApps.get(position).packageName);
+            AppInfo app = filteredApps.get(position);
+            launchApp(app.packageName, app.className);
             hideSearch();
         });
 
@@ -1005,7 +999,8 @@ public class MainActivity extends Activity {
                             e.printStackTrace();
                         }
                     } else {
-                        launchApp(filteredApps.get(0).packageName);
+                        AppInfo app = filteredApps.get(0);
+                        launchApp(app.packageName, app.className);
                     }
                     hideSearch();
                 }
@@ -1060,38 +1055,54 @@ public class MainActivity extends Activity {
         String[] keywords = {"dialer", "mms", "browser", "camera", "contacts"};
         for (int i = 0; i < DOCK_COUNT; i++) {
             final int index = i;
-            String pkg = prefs.getString(PREF_DOCK_PREFIX + i, null);
+            String dockValue = prefs.getString(PREF_DOCK_PREFIX + i, null);
+            String pkg = null, cls = null;
+
+            if (dockValue != null) {
+                if (dockValue.contains("/")) {
+                    int sep = dockValue.indexOf('/');
+                    pkg = dockValue.substring(0, sep);
+                    cls = dockValue.substring(sep + 1);
+                    if (cls.isEmpty()) cls = null;
+                } else {
+                    pkg = dockValue;
+                }
+            }
+
             int viewId = getResources().getIdentifier("dock_" + (index + 1), "id", getPackageName());
             ImageView iv = findViewById(viewId);
 
             if (pkg == null || getPackageManager().getLaunchIntentForPackage(pkg) == null) {
-                // 優先使用關鍵字匹配預設 App
+                pkg = null; cls = null; 
                 if (i < keywords.length) {
                     for (AppInfo app : allApps) {
                         if (app.packageName.toLowerCase().contains(keywords[i])) {
                             pkg = app.packageName;
+                            cls = app.className;
                             break;
                         }
                     }
                 }
                 
-                // 如果沒匹配到，隨機選一個
                 if (pkg == null && !allApps.isEmpty()) {
-                    pkg = allApps.get(random.nextInt(allApps.size())).packageName;
+                    AppInfo randomApp = allApps.get(random.nextInt(allApps.size()));
+                    pkg = randomApp.packageName;
+                    cls = randomApp.className;
                 }
-                if (pkg != null) prefs.edit().putString(PREF_DOCK_PREFIX + i, pkg).apply();
+                if (pkg != null) prefs.edit().putString(PREF_DOCK_PREFIX + i, pkg + "/" + (cls != null ? cls : "")).apply();
             }
 
             if (pkg != null) {
-                iv.setImageDrawable(getAppIcon(pkg));
+                iv.setImageDrawable(getAppIcon(pkg, cls));
                 final String finalPkg = pkg;
-                iv.setOnClickListener(v -> launchApp(finalPkg));
-                iv.setOnLongClickListener(v -> { showDockMenu(index, finalPkg); return true; });
+                final String finalCls = cls;
+                iv.setOnClickListener(v -> launchApp(finalPkg, finalCls));
+                iv.setOnLongClickListener(v -> { showDockMenu(index, finalPkg, finalCls); return true; });
             }
         }
     }
 
-    private void showDockMenu(int index, String pkg) {
+    private void showDockMenu(int index, String pkg, String cls) {
         String[] options = {"Change App", "Change Icon", "Reset Icon", "Change Name", "Reset Name"};
         getDialogBuilder()
             .setTitle("Dock Shortcut")
@@ -1099,12 +1110,14 @@ public class MainActivity extends Activity {
                 if (which == 0) showAppPickerForDock(index);
                 else if (which == 1) {
                     pendingPackageName = pkg;
+                    pendingClassName = cls;
                     Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
                     intent.setType("image/*");
                     startActivityForResult(intent, REQUEST_PICK_IMAGE);
                 } else if (which == 2) {
-                    prefs.edit().remove(PREF_CUSTOM_ICON_PREFIX + pkg).apply();
-                    if (iconCache != null) iconCache.remove(pkg);
+                    String cacheKey = (cls != null) ? pkg + "/" + cls : pkg;
+                    prefs.edit().remove(PREF_CUSTOM_ICON_PREFIX + cacheKey).apply();
+                    if (iconCache != null) iconCache.remove(cacheKey);
                     setupDock();
                     if (adapter != null) adapter.notifyDataSetChanged();
                 } else if (which == 3) {
@@ -1173,7 +1186,7 @@ public class MainActivity extends Activity {
                 
                 label.setText(app.label);
                 label.setTextColor(currentTextColor);
-                icon.setImageDrawable(getAppIcon(app.packageName));
+                icon.setImageDrawable(getAppIcon(app.packageName, app.className));
 
                 // 設定選單圖示的原生圓角
                 icon.setOutlineProvider(new ViewOutlineProvider() {
@@ -1189,14 +1202,23 @@ public class MainActivity extends Activity {
         };
 
         builder.setAdapter(adapter, (dialog, which) -> {
-            prefs.edit().putString(PREF_DOCK_PREFIX + dockIndex, allApps.get(which).packageName).apply();
+            AppInfo selected = allApps.get(which);
+            prefs.edit().putString(PREF_DOCK_PREFIX + dockIndex, selected.packageName + "/" + selected.className).apply();
             setupDock();
         });
         builder.show();
     }
 
-    private void launchApp(String pkg) {
-        Intent intent = getPackageManager().getLaunchIntentForPackage(pkg);
+    private void launchApp(String pkg, String cls) {
+        Intent intent;
+        if (cls != null && !cls.isEmpty()) {
+            intent = new Intent(Intent.ACTION_MAIN);
+            intent.addCategory(Intent.CATEGORY_LAUNCHER);
+            intent.setComponent(new ComponentName(pkg, cls));
+            intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+        } else {
+            intent = getPackageManager().getLaunchIntentForPackage(pkg);
+        }
         if (intent != null) startActivity(intent);
     }
 
@@ -1217,21 +1239,28 @@ public class MainActivity extends Activity {
 
     private String getCPUUsage() {
         try (RandomAccessFile reader = new RandomAccessFile("/proc/stat", "r")) {
-            String[] toks = reader.readLine().split(" +");
+            String line = reader.readLine();
+            if (line == null) return "0";
+            String[] toks = line.split(" +");
+            if (toks.length < 5) return "0";
             long idle1 = Long.parseLong(toks[4]);
-            long cpu1 = Long.parseLong(toks[1]) + Long.parseLong(toks[2]) + Long.parseLong(toks[3]) + Long.parseLong(toks[4]) + Long.parseLong(toks[5]) + Long.parseLong(toks[6]) + Long.parseLong(toks[7]);
+            long cpu1 = 0;
+            for (int k = 1; k < Math.min(toks.length, 8); k++) cpu1 += Long.parseLong(toks[k]);
             Thread.sleep(360);
             reader.seek(0);
-            toks = reader.readLine().split(" +");
+            line = reader.readLine();
+            if (line == null) return "0";
+            toks = line.split(" +");
             long idle2 = Long.parseLong(toks[4]);
-            long cpu2 = Long.parseLong(toks[1]) + Long.parseLong(toks[2]) + Long.parseLong(toks[3]) + Long.parseLong(toks[4]) + Long.parseLong(toks[5]) + Long.parseLong(toks[6]) + Long.parseLong(toks[7]);
-            return String.valueOf((int)((cpu2 - cpu1 - (idle2 - idle1)) * 100 / (cpu2 - cpu1)));
+            long cpu2 = 0;
+            for (int k = 1; k < Math.min(toks.length, 8); k++) cpu2 += Long.parseLong(toks[k]);
+            return (cpu2 == cpu1) ? "0" : String.valueOf((int)((cpu2 - cpu1 - (idle2 - idle1)) * 100 / (cpu2 - cpu1)));
         } catch (Exception e) { return "0"; }
     }
 
     private static class AppInfo {
-        String label, packageName;
-        AppInfo(String l, String p) { label = l; packageName = p; }
+        String label, packageName, className;
+        AppInfo(String l, String p, String c) { label = l; packageName = p; className = c; }
     }
 
     private class AppAdapter extends BaseAdapter {
@@ -1249,7 +1278,7 @@ public class MainActivity extends Activity {
             label.setText(app.label);
             label.setTextColor(currentTextColor);
 
-            icon.setImageDrawable(getAppIcon(app.packageName));
+            icon.setImageDrawable(getAppIcon(app.packageName, app.className));
 
             // 搜尋列表中的圖示也套用原生圓角
             icon.setOutlineProvider(new ViewOutlineProvider() {
