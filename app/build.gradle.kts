@@ -14,8 +14,8 @@ android {
         applicationId = "com.liferlighdow.version"
         minSdk = 21
         targetSdk = 36
-        versionCode = 7
-        versionName = "1.2.2"
+        versionCode = 8
+        versionName = "1.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

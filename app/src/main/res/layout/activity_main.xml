@@ -56,12 +56,12 @@
                 android:layout_marginTop="8dp">
 
                 <TextView
-                    android:id="@+id/cpu_stat"
+                    android:id="@+id/battery_stat"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:textColor="#FFFFFF"
                     android:textSize="12sp"
-                    android:text="CPU: --%" />
+                    android:text="BAT: --%" />
 
                 <View
                     android:layout_width="1dp"
@@ -195,12 +195,17 @@
         android:background="#EE000000"
         android:orientation="vertical"
         android:visibility="gone"
-        android:padding="20dp">
+        android:paddingLeft="8dp"
+        android:paddingRight="8dp"
+        android:paddingTop="20dp"
+        android:paddingBottom="20dp">
 
         <EditText
             android:id="@+id/search_input"
             android:layout_width="match_parent"
             android:layout_height="50dp"
+            android:layout_marginLeft="12dp"
+            android:layout_marginRight="12dp"
             android:background="@drawable/search_bar_background"
             android:hint="Search apps or web..."
             android:textColor="#FFFFFF"
@@ -210,12 +215,16 @@
             android:imeOptions="actionSearch"
             android:inputType="text" />
 
-        <ListView
+        <GridView
             android:id="@+id/search_results"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:layout_marginTop="12dp"
-            android:divider="@null" />
+            android:horizontalSpacing="20dp"
+            android:verticalSpacing="16dp"
+            android:gravity="center"
+            android:stretchMode="columnWidth"
+            android:listSelector="@android:color/transparent" />
     </LinearLayout>
 
 </FrameLayout>

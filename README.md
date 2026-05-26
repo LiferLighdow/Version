@@ -1,47 +1,73 @@
-# VersionOS Launcher 🚀
+<p align="center">
+  <img src="https://raw.githubusercontent.com/google/material-design-icons/master/png/action/rocket_launch/materialicons/48dp/2x/baseline_rocket_launch_black_48dp.png" width="100" height="100">
+</p>
 
-**Inspire from KISS Launcher but LIGHTER.**
+<h1 align="center">VersionOS Launcher</h1>
 
-VersionOS is an ultra-minimalist, high-performance Android launcher designed for those who value speed, privacy, and technical purity. It delivers a modern smartphone experience within an impossible **45 KB** footprint.
+<p align="center">
+  <strong>Inspire from KISS Launcher but LIGHTER.</strong><br>
+  <em>Ultra-minimalist. High-performance. Zero-bloat.</em>
+</p>
 
-## 📦 The 50KB Engineering Marvel
-VersionOS is built with **zero external dependencies**. No AndroidX, no Material Components, no heavy libraries. By using pure Android SDK and hardware-accelerated native APIs, we've reduced the size by 99% compared to traditional launchers.
+<p align="center">
+  <img src="https://img.shields.io/badge/Language-Pure%20Java-orange" alt="Language">
+  <img src="https://img.shields.io/badge/Android-5.0--16%2B-green" alt="Android">
+  <img src="https://img.shields.io/badge/Size-~50%20KB-blue" alt="Size">
+  <img src="https://img.shields.io/badge/License-MIT-lightgrey" alt="License">
+  <img src="https://img.shields.io/badge/Dependencies-Zero-red" alt="Dependencies">
+</p>
 
-## ✨ Advanced Features
-- **Hybrid Search/Drawer**: A single unified interface for searching apps. **Smart Fallback**: If no local app is found, pressing 'Enter' instantly launches a Google web search.
-- **UI Themes**: Choose from **Default (Glass)**, **OLED Black**, **Snow White**, or **AOSP Style**. 
-    - *AOSP Style* features a refined 5-icon layout and hides the Stats Widget for the ultimate clean look.
-- **Icon Customization**: 
-    - **Interactive Cropping**: Professional-grade manual pan and zoom to select your favorite image area.
-    - **Legacy Adaptive Icons**: Brings modern **Circle/Rounded Square masking** to Android 5.0 - 7.1 devices, ensuring a unified look on older hardware.
-    - **Memory Optimized**: Custom icons are pre-sampled and cached to prevent OOM.
-- **App Renaming**: Personalize application labels for a cleaner dock or easier searching.
-- **Smart Gestures**:
-    - **Swipe Down**: Expand notifications panel (via Reflection).
+---
+
+VersionOS is a high-performance Android launcher designed for those who value speed, privacy, and technical purity. It delivers a modern smartphone experience within an impossible **~50 KB** footprint by stripping away all external libraries and returning to pure Android SDK development.
+
+## ✨ Key Features
+
+### 🎨 Intelligent Theming
+- **Four Distinct Modes**: Default (Glass), OLED Black, Snow White, and the all-new **AOSP Style**.
+- **AOSP Style Evolution**: 
+    - **Native Experience**: Features a 5-column grid layout that perfectly matches the 5-icon dock.
+    - **Clean Desktop**: Automatically hides the main search bar and stats widget for a distraction-free home screen.
+    - **Adaptive Grid**: 5xN grid layout for the App Drawer with optimized spacing for modern screen ratios.
+
+### 🔍 Unified Search & App Drawer
+- **Hybrid Interface**: A single, lightning-fast interface for searching apps.
+- **Smart Fallback**: If no local app is found, pressing 'Enter' instantly performs a web search via your default browser.
+- **$O(1)$ Performance**: Utilizes hash-map indexing for near-instant app filtering and dock responsiveness.
+
+### 🛠 Professional Customization
+- **Icon Studio**: 
+    - **Interactive Cropping**: Manual pan and zoom to perfectly frame your custom icons.
+    - **Universal Adaptive Icons**: Retrofits **Circle/Rounded Square masking** for devices running Android 5.0+, ensuring a modern look on legacy hardware.
+- **Label Editing**: Rename apps directly from the home screen for a personalized aesthetic.
+
+### 👆 Intuitive Gestures
+- **Smart Swipe (AOSP Mode)**:
+    - **Swipe Up**: Instantly call the App Drawer.
+    - **Swipe Down**: Intelligently close the Drawer when at the top of the list.
+- **System Gestures**:
+    - **Fling Down**: Expand the system notification panel (via safe reflection).
     - **Double Tap**: Lock screen/Sleep (Requires Device Admin activation).
-- **Privacy Management**: Hide sensitive apps from both the search results and dock with a full-featured selection menu.
-- **Live Stats Widget**: Real-time monitoring of CPU, RAM, and ROM usage in a sleek capsule design.
-- **AMOLED Save Mode**: Toggle pure black (#000000) background to eliminate pixel power consumption.
 
-## 🛠 Shortcuts & Interaction
-- **Clock**: Opens Alarms.
-- **Date**: Opens Calendar.
-- **Long Press Empty Space**: Access Settings (Theme selection, Black Mode, Hide Apps, and **Quick Set as Default Launcher**).
-- **Long Press Dock Item**: 
-    - **Change App**: Reassign the shortcut.
-    - **Change Icon**: Launch the interactive cropper.
-    - **Change Name**: Set a custom label.
-    - **Reset**: Revert icon or name to system defaults.
+### 📊 Real-Time Telemetry
+- **Hardware Stats**: Capsule-design widget monitoring **Battery Level**, **RAM usage**, and **Storage (ROM)** status.
+- **Optimized Monitoring**: Replaced legacy CPU polling with high-efficiency Battery API calls to maximize device standby time.
 
 ## 🚀 Technical Philosophy: "Mechanical Sympathy"
-VersionOS is designed to work *with* the Android OS, not on top of it:
-- **Zero-Cost UI**: Uses `ViewOutlineProvider` for native corner clipping and `Matrix` transformations for high-speed image processing.
-- **Zero AndroidX**: Built purely on the platform's `android.*` APIs to eliminate library overhead.
-- **Memory Efficiency**: Manual `Bitmap` recycling and `inSampleSize` decoding to maintain a tiny RAM footprint.
-- **O(1) Filtering**: App search and visibility logic performed with zero UI lag.
-- **Pure SDK**: Compatible with Android 5.0 (API 21) and above.
+- **Zero-Cost UI**: Employs `ViewOutlineProvider` for native hardware-layer corner clipping.
+- **Memory Management**: Manual `Bitmap` recycling and `LruCache` sizing based on 1/8 of available system RAM.
+- **High-Speed Indexing**: Transitioned from $O(N \cdot M)$ list iterations to $O(1)$ map lookups for all UI components.
+- **Compatibility**: Supports Android 5.0 (API 21) up to the latest Android 16+ (Target SDK 36).
 
-## 📝 License
-MIT License. Keep it light, keep it fast.
+## 📝 Interaction Guide
+- **Clock**: Tap to open Alarm/Clock.
+- **Date**: Tap to open Calendar.
+- **Desktop Long Press**: Access global settings (Theme, Hidden Apps, Default Launcher).
+- **Dock Long Press**: Modify shortcuts, icons, or labels.
 
-Developed with ❤️ by LiferLighdow
+## 📜 License
+**MIT License**. Keep it light, keep it fast. Stay in control.
+
+---
+
+**Developed with ❤️ by LiferLighdow**

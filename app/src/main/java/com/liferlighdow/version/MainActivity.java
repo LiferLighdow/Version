@@ -37,8 +37,8 @@ import android.view.ViewGroup;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.BaseAdapter;
-import android.widget.CheckBox;
 import android.widget.EditText;
+import android.widget.GridView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
@@ -55,6 +55,9 @@ import android.content.IntentFilter;
 import android.net.Uri;
 import android.util.LruCache;
 
+import android.os.BatteryManager;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.HashSet;
 import java.util.Set;
 import java.io.RandomAccessFile;
@@ -73,17 +76,18 @@ public class MainActivity extends Activity {
     private HandlerThread backgroundThread;
     
     private Runnable timeUpdater, statsUpdater;
-    private TextView timeText, dateText, cpuStat, ramStat, romStat;
+    private TextView timeText, dateText, batteryStat, ramStat, romStat;
     private View searchContainer;
     private EditText searchInput, homeSearch;
-    private ListView searchResults;
+    private GridView searchResults;
     private LruCache<String, Drawable> iconCache;
     
     private final List<AppInfo> allApps = new ArrayList<>();
+    private final Map<String, AppInfo> appMap = new HashMap<>();
     private final List<AppInfo> filteredApps = new ArrayList<>();
     private AppAdapter adapter;
     private int currentTextColor = 0xFFFFFFFF;
-    private GestureDetector gestureDetector;
+    private GestureDetector gestureDetector, searchGestureDetector;
     private DevicePolicyManager devicePolicyManager;
     private ComponentName adminComponent;
     private boolean isSearchVisible = false;
@@ -92,11 +96,7 @@ public class MainActivity extends Activity {
         @Override
         public void onReceive(Context context, Intent intent) {
             if (iconCache != null) iconCache.evictAll();
-            loadApps();
-            uiHandler.post(() -> {
-                setupDock();
-                if (adapter != null) adapter.notifyDataSetChanged();
-            });
+            loadApps(); // loadApps 內部現在會自動觸發 setupDock()
         }
     };
 
@@ -164,7 +164,6 @@ public class MainActivity extends Activity {
         adjustUiToScreen(); // 根據螢幕動態調整大小
         loadApps();
         setupSearch();
-        setupDock();
         setupGestures();
 
         IntentFilter filter = new IntentFilter();
@@ -224,7 +223,7 @@ public class MainActivity extends Activity {
     private void initViews() {
         timeText = findViewById(R.id.time_text);
         dateText = findViewById(R.id.date_text);
-        cpuStat = findViewById(R.id.cpu_stat);
+        batteryStat = findViewById(R.id.battery_stat);
         ramStat = findViewById(R.id.ram_stat);
         romStat = findViewById(R.id.rom_stat);
         searchContainer = findViewById(R.id.search_container);
@@ -302,6 +301,32 @@ public class MainActivity extends Activity {
                     expandNotifications();
                     return true;
                 }
+                // 上滑偵測 (向上速度大於門檻且為垂直向) - 僅在 AOSP Style 開啟
+                if (velocityY < -500 && Math.abs(velocityY) > Math.abs(velocityX)) {
+                    if (prefs.getInt(PREF_THEME, 0) == 3) {
+                        showSearch();
+                        return true;
+                    }
+                }
+                return false;
+            }
+        });
+
+        searchGestureDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
+            @Override
+            public boolean onFling(MotionEvent e1, MotionEvent e2, float velocityX, float velocityY) {
+                // AOSP 下滑關閉搜尋 (當 ListView/GridView 在頂部時)
+                if (velocityY > 500 && Math.abs(velocityY) > Math.abs(velocityX)) {
+                    if (isSearchVisible && prefs.getInt(PREF_THEME, 0) == 3) {
+                        if (searchResults.getFirstVisiblePosition() <= 0) {
+                            View firstChild = searchResults.getChildAt(0);
+                            if (firstChild == null || firstChild.getTop() >= 0) {
+                                hideSearch();
+                                return true;
+                            }
+                        }
+                    }
+                }
                 return false;
             }
         });
@@ -320,6 +345,8 @@ public class MainActivity extends Activity {
     public boolean dispatchTouchEvent(MotionEvent ev) {
         if (!isSearchVisible) {
             gestureDetector.onTouchEvent(ev);
+        } else {
+            searchGestureDetector.onTouchEvent(ev);
         }
         return super.dispatchTouchEvent(ev);
     }
@@ -453,7 +480,7 @@ public class MainActivity extends Activity {
         currentTextColor = textColor;
         timeText.setTextColor(textColor);
         dateText.setTextColor(textColor);
-        cpuStat.setTextColor(textColor);
+        batteryStat.setTextColor(textColor);
         ramStat.setTextColor(textColor);
         romStat.setTextColor(textColor);
         searchInput.setTextColor(textColor);
@@ -479,6 +506,9 @@ public class MainActivity extends Activity {
         // Toggle Stats Widget
         LinearLayout statsWidget = findViewById(R.id.stats_widget);
         statsWidget.setVisibility(theme == 3 ? View.GONE : View.VISIBLE);
+        
+        // AOSP Style 隱藏主畫面搜尋框
+        homeSearch.setVisibility(theme == 3 ? View.GONE : View.VISIBLE);
 
         // Apply to Containers
         applyViewStyle(statsWidget, containerColor, strokeColor, (int)(40 * density), (int)(1 * density));
@@ -508,6 +538,7 @@ public class MainActivity extends Activity {
 
         // Refresh layouts
         adjustUiToScreen();
+        searchResults.setNumColumns(theme == 3 ? 5 : 1);
         setupDock();
         if (adapter != null) adapter.notifyDataSetChanged();
     }
@@ -885,14 +916,7 @@ public class MainActivity extends Activity {
                 @Override
                 public void run() {
                     updateRam();
-                    backgroundHandler.post(() -> {
-                        final String usage = getCPUUsage();
-                        uiHandler.post(() -> {
-                            stringBuilder.setLength(0);
-                            cpuStat.setText(stringBuilder.append("CPU: ").append(usage).append("%"));
-                        });
-                    });
-                    
+                    updateBattery();
                     if (romCounter % 60 == 0) updateRom();
                     romCounter++;
                     uiHandler.postDelayed(this, 3000);
@@ -913,6 +937,11 @@ public class MainActivity extends Activity {
         nowDate.setTime(System.currentTimeMillis());
         timeText.setText(timeFormat.format(nowDate));
         dateText.setText(dateFormat.format(nowDate));
+    }
+
+    private void updateBattery() {
+        stringBuilder.setLength(0);
+        batteryStat.setText(stringBuilder.append("BAT: ").append(getBatteryLevel()).append("%"));
     }
 
     private void updateRam() {
@@ -946,6 +975,9 @@ public class MainActivity extends Activity {
             uiHandler.post(() -> {
                 allApps.clear();
                 allApps.addAll(newList);
+                appMap.clear();
+                for (AppInfo app : newList) appMap.put(app.packageName, app);
+                setupDock(); // 確保 App 載入完後才設定 Dock
                 if (adapter != null) adapter.notifyDataSetChanged();
             });
         });
@@ -1067,20 +1099,22 @@ public class MainActivity extends Activity {
                 } else {
                     pkg = dockValue;
                 }
+                
+                // 只有在 appMap 不為空（代表已載入）時才檢查 App 是否存在
+                if (!appMap.isEmpty() && !appMap.containsKey(pkg)) {
+                    pkg = null; cls = null;
+                }
             }
 
             int viewId = getResources().getIdentifier("dock_" + (index + 1), "id", getPackageName());
             ImageView iv = findViewById(viewId);
 
-            if (pkg == null || getPackageManager().getLaunchIntentForPackage(pkg) == null) {
-                pkg = null; cls = null; 
-                if (i < keywords.length) {
-                    for (AppInfo app : allApps) {
-                        if (app.packageName.toLowerCase().contains(keywords[i])) {
-                            pkg = app.packageName;
-                            cls = app.className;
-                            break;
-                        }
+            if (pkg == null) {
+                for (AppInfo app : allApps) {
+                    if (app.packageName.toLowerCase().contains(keywords[i])) {
+                        pkg = app.packageName;
+                        cls = app.className;
+                        break;
                     }
                 }
                 
@@ -1093,9 +1127,11 @@ public class MainActivity extends Activity {
             }
 
             if (pkg != null) {
-                iv.setImageDrawable(getAppIcon(pkg, cls));
+                AppInfo app = appMap.get(pkg);
+                // 優先使用 Map 中的 cls，防止啟動錯誤
                 final String finalPkg = pkg;
-                final String finalCls = cls;
+                final String finalCls = (app != null) ? app.className : cls;
+                iv.setImageDrawable(getAppIcon(finalPkg, finalCls));
                 iv.setOnClickListener(v -> launchApp(finalPkg, finalCls));
                 iv.setOnLongClickListener(v -> { showDockMenu(index, finalPkg, finalCls); return true; });
             }
@@ -1222,6 +1258,14 @@ public class MainActivity extends Activity {
         if (intent != null) startActivity(intent);
     }
 
+    private int getBatteryLevel() {
+        BatteryManager bm = (BatteryManager) getSystemService(BATTERY_SERVICE);
+        if (bm != null) {
+            return bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY);
+        }
+        return 0;
+    }
+
     private int getRamPercentage() {
         ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
         ((ActivityManager) getSystemService(ACTIVITY_SERVICE)).getMemoryInfo(mi);
@@ -1235,27 +1279,6 @@ public class MainActivity extends Activity {
         long avail = stat.getAvailableBlocksLong() * stat.getBlockSizeLong();
         if (total <= 0) return 0;
         return (int) ((total - avail) * 100 / total);
-    }
-
-    private String getCPUUsage() {
-        try (RandomAccessFile reader = new RandomAccessFile("/proc/stat", "r")) {
-            String line = reader.readLine();
-            if (line == null) return "0";
-            String[] toks = line.split(" +");
-            if (toks.length < 5) return "0";
-            long idle1 = Long.parseLong(toks[4]);
-            long cpu1 = 0;
-            for (int k = 1; k < Math.min(toks.length, 8); k++) cpu1 += Long.parseLong(toks[k]);
-            Thread.sleep(360);
-            reader.seek(0);
-            line = reader.readLine();
-            if (line == null) return "0";
-            toks = line.split(" +");
-            long idle2 = Long.parseLong(toks[4]);
-            long cpu2 = 0;
-            for (int k = 1; k < Math.min(toks.length, 8); k++) cpu2 += Long.parseLong(toks[k]);
-            return (cpu2 == cpu1) ? "0" : String.valueOf((int)((cpu2 - cpu1 - (idle2 - idle1)) * 100 / (cpu2 - cpu1)));
-        } catch (Exception e) { return "0"; }
     }
 
     private static class AppInfo {
@@ -1274,6 +1297,46 @@ public class MainActivity extends Activity {
             AppInfo app = filteredApps.get(p);
             TextView label = v.findViewById(R.id.item_label);
             ImageView icon = v.findViewById(R.id.item_icon);
+            LinearLayout layout = (LinearLayout) v;
+            
+            int theme = prefs.getInt(PREF_THEME, 0);
+            if (theme == 3) { // AOSP Grid Mode
+                layout.setOrientation(LinearLayout.VERTICAL);
+                layout.setGravity(android.view.Gravity.CENTER);
+                // 增加上下間距從 8dp 到 16dp
+                int vPad = (int)(16 * getResources().getDisplayMetrics().density);
+                layout.setPadding(0, vPad, 0, vPad);
+                
+                LinearLayout.LayoutParams lpIcon = (LinearLayout.LayoutParams) icon.getLayoutParams();
+                lpIcon.setMargins(0, 0, 0, 0);
+                icon.setLayoutParams(lpIcon);
+                
+                LinearLayout.LayoutParams lpLabel = (LinearLayout.LayoutParams) label.getLayoutParams();
+                lpLabel.width = ViewGroup.LayoutParams.MATCH_PARENT;
+                lpLabel.setMarginStart(0);
+                label.setLayoutParams(lpLabel);
+                label.setGravity(android.view.Gravity.CENTER);
+                label.setTextSize(12);
+                label.setSingleLine(true);
+                label.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            } else { // List Mode
+                layout.setOrientation(LinearLayout.HORIZONTAL);
+                layout.setGravity(android.view.Gravity.CENTER_VERTICAL);
+                int pSize = (int)(12 * getResources().getDisplayMetrics().density);
+                layout.setPadding(pSize, pSize, pSize, pSize);
+                
+                LinearLayout.LayoutParams lpIcon = (LinearLayout.LayoutParams) icon.getLayoutParams();
+                icon.setLayoutParams(lpIcon);
+                
+                LinearLayout.LayoutParams lpLabel = (LinearLayout.LayoutParams) label.getLayoutParams();
+                lpLabel.width = 0;
+                lpLabel.weight = 1;
+                lpLabel.setMarginStart((int)(16 * getResources().getDisplayMetrics().density));
+                label.setLayoutParams(lpLabel);
+                label.setGravity(android.view.Gravity.CENTER_VERTICAL);
+                label.setTextSize(16);
+                label.setSingleLine(false);
+            }
             
             label.setText(app.label);
             label.setTextColor(currentTextColor);
