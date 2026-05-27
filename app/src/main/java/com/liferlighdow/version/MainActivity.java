@@ -43,6 +43,7 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.TextView;
+import android.widget.RelativeLayout;
 import android.app.admin.DevicePolicyManager;
 import android.content.ComponentName;
 import android.view.GestureDetector;
@@ -68,6 +69,10 @@ import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.Random;
+import android.appwidget.AppWidgetHost;
+import android.appwidget.AppWidgetHostView;
+import android.appwidget.AppWidgetManager;
+import android.appwidget.AppWidgetProviderInfo;
 
 public class MainActivity extends Activity {
 
@@ -77,7 +82,7 @@ public class MainActivity extends Activity {
     
     private Runnable timeUpdater, statsUpdater;
     private TextView timeText, dateText, batteryStat, ramStat, romStat;
-    private View searchContainer;
+    private View searchContainer, clockContainer, widgetContainer;
     private EditText searchInput, homeSearch;
     private GridView searchResults;
     private LruCache<String, Drawable> iconCache;
@@ -87,9 +92,11 @@ public class MainActivity extends Activity {
     private final List<AppInfo> filteredApps = new ArrayList<>();
     private AppAdapter adapter;
     private int currentTextColor = 0xFFFFFFFF;
-    private GestureDetector gestureDetector, searchGestureDetector;
+    private GestureDetector gestureDetector;
     private DevicePolicyManager devicePolicyManager;
     private ComponentName adminComponent;
+    private AppWidgetManager mAppWidgetManager;
+    private AppWidgetHost mAppWidgetHost;
     private boolean isSearchVisible = false;
 
     private final BroadcastReceiver packageReceiver = new BroadcastReceiver() {
@@ -106,10 +113,19 @@ public class MainActivity extends Activity {
     private static final String PREF_HIDDEN_APPS = "hidden_apps";
     private static final String PREF_THEME = "ui_theme";
     private static final String PREF_ADAPTIVE_ICON = "adaptive_icon";
+    private static final String PREF_WIDGET_MODE = "widget_mode";
+    private static final String PREF_WIDGET_ID = "widget_id";
+    private static final String PREF_WIDGET_HEIGHT = "widget_height_val"; // 儲存 dp 值
+    private static final String PREF_WIDGET_WIDTH_SCALE = "widget_width_scale"; // 比例 0-10
+    private static final String PREF_WIDGET_Y_OFFSET = "widget_y_offset"; // Top margin dp
+    private static final String PREF_HIDE_APPS_PIN = "hide_apps_pin";
     private static final String PREF_CUSTOM_ICON_PREFIX = "custom_icon_";
     private static final String PREF_CUSTOM_LABEL_PREFIX = "custom_label_";
     private static final int DOCK_COUNT = 5;
     private static final int REQUEST_PICK_IMAGE = 1001;
+    private static final int REQUEST_PICK_APPWIDGET = 9;
+    private static final int REQUEST_CREATE_APPWIDGET = 5;
+    private static final int APPWIDGET_HOST_ID = 1024;
     private String pendingPackageName = null;
     private String pendingClassName = null;
 
@@ -133,6 +149,9 @@ public class MainActivity extends Activity {
 
         setContentView(R.layout.activity_main);
         prefs = getSharedPreferences("launcher_prefs", MODE_PRIVATE);
+
+        mAppWidgetManager = AppWidgetManager.getInstance(this);
+        mAppWidgetHost = new AppWidgetHost(this, APPWIDGET_HOST_ID);
 
         // 相容性修復：將舊版 boolean 轉換為新版 int
         try {
@@ -172,6 +191,18 @@ public class MainActivity extends Activity {
         filter.addAction(Intent.ACTION_PACKAGE_CHANGED);
         filter.addDataScheme("package");
         registerReceiver(packageReceiver, filter);
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        if (mAppWidgetHost != null) mAppWidgetHost.startListening();
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        if (mAppWidgetHost != null) mAppWidgetHost.stopListening();
     }
 
     private void adjustUiToScreen() {
@@ -230,6 +261,13 @@ public class MainActivity extends Activity {
         searchInput = findViewById(R.id.search_input);
         homeSearch = findViewById(R.id.home_search);
         searchResults = findViewById(R.id.search_results);
+        clockContainer = findViewById(R.id.clock_container);
+        widgetContainer = findViewById(R.id.widget_container);
+
+        widgetContainer.setOnLongClickListener(v -> {
+            showWidgetSettingsDialog();
+            return true;
+        });
 
         // 時鐘點擊：開啟時鐘/鬧鐘
         timeText.setOnClickListener(v -> {
@@ -266,13 +304,34 @@ public class MainActivity extends Activity {
         });
 
         // 監聽長按桌面空白處 (root_container)
-        findViewById(R.id.root_container).setOnLongClickListener(v -> {
+        View root = findViewById(R.id.root_container);
+        View homeContent = findViewById(R.id.home_content);
+        View.OnLongClickListener mainLongClick = v -> {
             showSettings();
             return true;
-        });
+        };
+        root.setOnLongClickListener(mainLongClick);
+        homeContent.setOnLongClickListener(mainLongClick);
         
         applyBackgroundMode();
         applyTheme();
+        applyWidgetMode();
+    }
+
+    private void applyWidgetMode() {
+        boolean isWidgetMode = prefs.getBoolean(PREF_WIDGET_MODE, false);
+        if (clockContainer != null) {
+            clockContainer.setVisibility(isWidgetMode ? View.GONE : View.VISIBLE);
+        }
+        if (widgetContainer != null) {
+            widgetContainer.setVisibility(isWidgetMode ? View.VISIBLE : View.GONE);
+            if (isWidgetMode) {
+                int widgetId = prefs.getInt(PREF_WIDGET_ID, -1);
+                if (widgetId != -1) {
+                    loadWidget(widgetId);
+                }
+            }
+        }
     }
 
     private void setupGestures() {
@@ -311,25 +370,6 @@ public class MainActivity extends Activity {
                 return false;
             }
         });
-
-        searchGestureDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
-            @Override
-            public boolean onFling(MotionEvent e1, MotionEvent e2, float velocityX, float velocityY) {
-                // AOSP 下滑關閉搜尋 (當 ListView/GridView 在頂部時)
-                if (velocityY > 500 && Math.abs(velocityY) > Math.abs(velocityX)) {
-                    if (isSearchVisible && prefs.getInt(PREF_THEME, 0) == 3) {
-                        if (searchResults.getFirstVisiblePosition() <= 0) {
-                            View firstChild = searchResults.getChildAt(0);
-                            if (firstChild == null || firstChild.getTop() >= 0) {
-                                hideSearch();
-                                return true;
-                            }
-                        }
-                    }
-                }
-                return false;
-            }
-        });
     }
 
     private void expandNotifications() {
@@ -345,8 +385,6 @@ public class MainActivity extends Activity {
     public boolean dispatchTouchEvent(MotionEvent ev) {
         if (!isSearchVisible) {
             gestureDetector.onTouchEvent(ev);
-        } else {
-            searchGestureDetector.onTouchEvent(ev);
         }
         return super.dispatchTouchEvent(ev);
     }
@@ -365,12 +403,23 @@ public class MainActivity extends Activity {
         int adaptiveMode = prefs.getInt(PREF_ADAPTIVE_ICON, 0); // 0: Off, 1: Circle, 2: Rounded
         String adaptiveText = (adaptiveMode == 0) ? "Enable Adaptive Icons" : "Disable Adaptive Icons";
 
+        boolean isWidgetMode = prefs.getBoolean(PREF_WIDGET_MODE, false);
+        String widgetModeText = isWidgetMode ? "None Widget Mode" : "Widget Mode";
+
         List<String> optionsList = new ArrayList<>();
         optionsList.add(blackModeText);
+        optionsList.add(widgetModeText);
+        if (isWidgetMode) {
+            optionsList.add("Widget Settings");
+        }
         optionsList.add("Themes");
+        optionsList.add("Wallpaper");
         if (isPreOreo) optionsList.add(adaptiveText);
         optionsList.add("Hide Apps");
-        optionsList.add("Set as Default Launcher");
+        optionsList.add("Hidden Apps");
+        if (!isDefaultLauncher()) {
+            optionsList.add("Set as Default Launcher");
+        }
         
         String[] options = optionsList.toArray(new String[0]);
         
@@ -379,8 +428,23 @@ public class MainActivity extends Activity {
             if (selected.equals(blackModeText)) {
                 prefs.edit().putBoolean(PREF_BLACK_MODE, !isBlackMode).apply();
                 applyBackgroundMode();
+            } else if (selected.equals(widgetModeText)) {
+                prefs.edit().putBoolean(PREF_WIDGET_MODE, !isWidgetMode).apply();
+                applyWidgetMode();
+            } else if (selected.equals("Widget Settings")) {
+                showWidgetSettingsDialog();
             } else if (selected.equals("Themes")) {
                 showThemeDialog();
+            } else if (selected.equals("Wallpaper")) {
+                try {
+                    Intent intent = new Intent(Intent.ACTION_SET_WALLPAPER);
+                    startActivity(Intent.createChooser(intent, "Select Wallpaper"));
+                } catch (Exception e) {
+                    // Fallback to general display settings if wallpaper picker fails
+                    try {
+                        startActivity(new Intent(Settings.ACTION_DISPLAY_SETTINGS));
+                    } catch (Exception ignored) {}
+                }
             } else if (selected.equals(adaptiveText)) {
                 if (adaptiveMode == 0) {
                     showAdaptiveShapeDialog();
@@ -389,7 +453,9 @@ public class MainActivity extends Activity {
                     refreshIcons();
                 }
             } else if (selected.equals("Hide Apps")) {
-                showHideAppsDialog();
+                handleHideAppsAccess();
+            } else if (selected.equals("Hidden Apps")) {
+                handleHiddenAppsLauncherAccess();
             } else if (selected.equals("Set as Default Launcher")) {
                 try {
                     Intent intent;
@@ -498,10 +564,12 @@ public class MainActivity extends Activity {
         searchContainer.setBackgroundColor(overlayColor);
 
         // Adjust Clock Container Position
-        View clockContainer = findViewById(R.id.clock_container);
         ViewGroup.MarginLayoutParams clockParams = (ViewGroup.MarginLayoutParams) clockContainer.getLayoutParams();
         clockParams.topMargin = (int) (density * (theme == 3 ? 120 : 80));
         clockContainer.setLayoutParams(clockParams);
+
+        // 如果目前是 Widget 模式，覆蓋時鐘的可見性
+        applyWidgetMode();
 
         // Toggle Stats Widget
         LinearLayout statsWidget = findViewById(R.id.stats_widget);
@@ -557,7 +625,8 @@ public class MainActivity extends Activity {
         if (cached != null) return cached;
 
         Drawable finalIcon = null;
-        String customPath = prefs.getString(PREF_CUSTOM_ICON_PREFIX + pkg, null);
+        String customPath = prefs.getString(PREF_CUSTOM_ICON_PREFIX + cacheKey, null);
+        if (customPath == null) customPath = prefs.getString(PREF_CUSTOM_ICON_PREFIX + pkg, null); // 相容舊版僅包名儲存方式
 
         try {
             if (customPath != null && new File(customPath).exists()) {
@@ -638,6 +707,120 @@ public class MainActivity extends Activity {
         return new android.app.AlertDialog.Builder(this, dialogTheme);
     }
 
+    private void handleHideAppsAccess() {
+        String savedPin = prefs.getString(PREF_HIDE_APPS_PIN, null);
+        if (savedPin == null) {
+            // 未設定過密碼，先詢問是否設定
+            getDialogBuilder()
+                .setTitle("Privacy")
+                .setMessage("Would you like to set a PIN to protect your hidden apps?")
+                .setPositiveButton("Set PIN", (d, w) -> showPinInputDialog(true, false))
+                .setNegativeButton("Not Now", (d, w) -> showHideAppsDialog())
+                .show();
+        } else {
+            showPinInputDialog(false, false);
+        }
+    }
+
+    private void handleHiddenAppsLauncherAccess() {
+        String savedPin = prefs.getString(PREF_HIDE_APPS_PIN, null);
+        if (savedPin == null) {
+            showHiddenAppsLauncherDialog();
+        } else {
+            showPinInputDialog(false, true);
+        }
+    }
+
+    private void showPinInputDialog(boolean isSettingNew, boolean forLauncher) {
+        final EditText input = new EditText(this);
+        input.setInputType(android.text.InputType.TYPE_CLASS_NUMBER | android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        input.setTransformationMethod(android.text.method.PasswordTransformationMethod.getInstance());
+        input.setGravity(android.view.Gravity.CENTER);
+        
+        String title = isSettingNew ? "Set PIN (Numbers only)" : "Enter PIN";
+        
+        getDialogBuilder()
+            .setTitle(title)
+            .setView(input)
+            .setPositiveButton("OK", (d, w) -> {
+                String pin = input.getText().toString();
+                if (isSettingNew) {
+                    if (!pin.isEmpty()) {
+                        prefs.edit().putString(PREF_HIDE_APPS_PIN, pin).apply();
+                        showHideAppsDialog();
+                    }
+                } else {
+                    String savedPin = prefs.getString(PREF_HIDE_APPS_PIN, "");
+                    if (savedPin.equals(pin)) {
+                        if (forLauncher) showHiddenAppsLauncherDialog();
+                        else showHideAppsDialog();
+                    } else {
+                        android.widget.Toast.makeText(this, "Wrong PIN", android.widget.Toast.LENGTH_SHORT).show();
+                    }
+                }
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    private void showHiddenAppsLauncherDialog() {
+        Set<String> hidden = prefs.getStringSet(PREF_HIDDEN_APPS, new HashSet<>());
+        if (hidden.isEmpty()) {
+            android.widget.Toast.makeText(this, "No hidden apps", android.widget.Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        PackageManager pm = getPackageManager();
+        Intent intent = new Intent(Intent.ACTION_MAIN, null);
+        intent.addCategory(Intent.CATEGORY_LAUNCHER);
+        List<ResolveInfo> all = pm.queryIntentActivities(intent, 0);
+        final List<AppInfo> hiddenApps = new ArrayList<>();
+        for (ResolveInfo ri : all) {
+            String pkg = ri.activityInfo.packageName;
+            if (pkg.equals(getPackageName())) continue; // 排除自身
+            if (hidden.contains(pkg)) {
+                hiddenApps.add(new AppInfo(ri.loadLabel(pm).toString(), pkg, ri.activityInfo.name));
+            }
+        }
+
+        if (hiddenApps.isEmpty()) {
+            android.widget.Toast.makeText(this, "No hidden apps found", android.widget.Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        Collections.sort(hiddenApps, (a, b) -> a.label.compareToIgnoreCase(b.label));
+
+        android.widget.ListAdapter adapter = new android.widget.BaseAdapter() {
+            @Override public int getCount() { return hiddenApps.size(); }
+            @Override public Object getItem(int p) { return hiddenApps.get(p); }
+            @Override public long getItemId(int p) { return p; }
+            @Override public View getView(int p, View v, ViewGroup parent) {
+                if (v == null) v = getLayoutInflater().inflate(R.layout.item_app, parent, false);
+                AppInfo app = hiddenApps.get(p);
+                TextView label = v.findViewById(R.id.item_label);
+                label.setText(app.label);
+                label.setTextColor(currentTextColor);
+                ImageView icon = v.findViewById(R.id.item_icon);
+                icon.setImageDrawable(getAppIcon(app.packageName, app.className));
+                icon.setOutlineProvider(new ViewOutlineProvider() {
+                    @Override public void getOutline(View view, Outline outline) {
+                        outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), view.getHeight() * 0.2f);
+                    }
+                });
+                icon.setClipToOutline(true);
+                return v;
+            }
+        };
+
+        getDialogBuilder()
+            .setTitle("Hidden Launcher")
+            .setAdapter(adapter, (d, which) -> {
+                AppInfo app = hiddenApps.get(which);
+                launchApp(app.packageName, app.className);
+            })
+            .show();
+    }
+
     private void showHideAppsDialog() {
         PackageManager pm = getPackageManager();
         Intent intent = new Intent(Intent.ACTION_MAIN, null);
@@ -647,9 +830,11 @@ public class MainActivity extends Activity {
 
         final List<AppInfo> appsForDialog = new ArrayList<>();
         for (ResolveInfo ri : allInstalledRI) {
+            String pkg = ri.activityInfo.packageName;
+            if (pkg.equals(getPackageName())) continue; // 排除自身
             appsForDialog.add(new AppInfo(
                 ri.loadLabel(pm).toString(),
-                ri.activityInfo.packageName,
+                pkg,
                 ri.activityInfo.name
             ));
         }
@@ -705,6 +890,14 @@ public class MainActivity extends Activity {
                 setupDock();
                 if (isSearchVisible) filterApps(searchInput.getText().toString());
             })
+            .setNeutralButton(prefs.getString(PREF_HIDE_APPS_PIN, null) == null ? "Set PIN" : "Remove PIN", (dialog, which) -> {
+                if (prefs.getString(PREF_HIDE_APPS_PIN, null) == null) {
+                    showPinInputDialog(true, false);
+                } else {
+                    prefs.edit().remove(PREF_HIDE_APPS_PIN).apply();
+                    android.widget.Toast.makeText(this, "PIN Removed", android.widget.Toast.LENGTH_SHORT).show();
+                }
+            })
             .show();
     }
 
@@ -720,11 +913,174 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        if (requestCode == REQUEST_PICK_IMAGE && resultCode == RESULT_OK && data != null && pendingPackageName != null) {
-            showCropDialog(data.getData(), pendingPackageName, pendingClassName);
-            pendingPackageName = null;
-            pendingClassName = null;
+        super.onActivityResult(requestCode, resultCode, data);
+        if (resultCode == RESULT_OK) {
+            if (requestCode == REQUEST_PICK_APPWIDGET) {
+                configureWidget(data);
+            } else if (requestCode == REQUEST_CREATE_APPWIDGET) {
+                createWidget(data);
+            } else if (requestCode == REQUEST_PICK_IMAGE && data != null && pendingPackageName != null) {
+                showCropDialog(data.getData(), pendingPackageName, pendingClassName);
+                pendingPackageName = null;
+                pendingClassName = null;
+            }
+        } else if (resultCode == RESULT_CANCELED && data != null) {
+            int appWidgetId = data.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, -1);
+            if (appWidgetId != -1) mAppWidgetHost.deleteAppWidgetId(appWidgetId);
         }
+    }
+
+    private void selectWidget() {
+        int appWidgetId = mAppWidgetHost.allocateAppWidgetId();
+        Intent pickIntent = new Intent(AppWidgetManager.ACTION_APPWIDGET_PICK);
+        pickIntent.putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId);
+        startActivityForResult(pickIntent, REQUEST_PICK_APPWIDGET);
+    }
+
+    private void configureWidget(Intent data) {
+        int appWidgetId = data.getExtras().getInt(AppWidgetManager.EXTRA_APPWIDGET_ID, -1);
+        AppWidgetProviderInfo appWidgetInfo = mAppWidgetManager.getAppWidgetInfo(appWidgetId);
+        if (appWidgetInfo.configure != null) {
+            Intent intent = new Intent(AppWidgetManager.ACTION_APPWIDGET_CONFIGURE);
+            intent.setComponent(appWidgetInfo.configure);
+            intent.putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId);
+            startActivityForResult(intent, REQUEST_CREATE_APPWIDGET);
+        } else {
+            createWidget(data);
+        }
+    }
+
+    private void createWidget(Intent data) {
+        int appWidgetId = data.getExtras().getInt(AppWidgetManager.EXTRA_APPWIDGET_ID, -1);
+        prefs.edit().putInt(PREF_WIDGET_ID, appWidgetId).apply();
+        loadWidget(appWidgetId);
+    }
+
+    private void showWidgetSettingsDialog() {
+        int widgetId = prefs.getInt(PREF_WIDGET_ID, -1);
+        String chooseOrChange = (widgetId == -1) ? "Choose Widget" : "Change Widget";
+        
+        List<String> optionsList = new ArrayList<>();
+        optionsList.add(chooseOrChange);
+        if (widgetId != -1) {
+            optionsList.add("Set Size");
+            optionsList.add("Set Coordinates");
+            optionsList.add("Delete");
+        }
+        optionsList.add("Launcher Settings");
+        
+        String[] options = optionsList.toArray(new String[0]);
+        
+        getDialogBuilder()
+            .setTitle("Widget Management")
+            .setItems(options, (dialog, which) -> {
+                String selected = options[which];
+                if (selected.equals(chooseOrChange)) {
+                    selectWidget();
+                } else if (selected.equals("Set Size")) {
+                    showWidgetSizeMenu();
+                } else if (selected.equals("Set Coordinates")) {
+                    showWidgetCoordinatesMenu();
+                } else if (selected.equals("Delete")) {
+                    mAppWidgetHost.deleteAppWidgetId(widgetId);
+                    prefs.edit().remove(PREF_WIDGET_ID).apply();
+                    
+                    // 核心修復：立即從畫面上移除 Widget 並恢復提示
+                    ViewGroup container = (ViewGroup) widgetContainer;
+                    container.removeAllViews();
+                    TextView hint = new TextView(this);
+                    hint.setText("Tap to add a widget");
+                    hint.setTextColor(0x44FFFFFF);
+                    hint.setGravity(android.view.Gravity.CENTER);
+                    container.addView(hint);
+                    
+                    applyWidgetMode();
+                } else {
+                    showSettings();
+                }
+            }).show();
+    }
+
+    private void showWidgetSizeMenu() {
+        String[] options = {"Increase Height", "Decrease Height", "Increase Width", "Decrease Width"};
+        getDialogBuilder()
+            .setTitle("Set Size")
+            .setItems(options, (dialog, which) -> {
+                int h = prefs.getInt(PREF_WIDGET_HEIGHT, 250);
+                int wScale = prefs.getInt(PREF_WIDGET_WIDTH_SCALE, 10);
+                if (which == 0) prefs.edit().putInt(PREF_WIDGET_HEIGHT, Math.min(h + 50, 800)).apply();
+                else if (which == 1) prefs.edit().putInt(PREF_WIDGET_HEIGHT, Math.max(h - 50, 50)).apply();
+                else if (which == 2) prefs.edit().putInt(PREF_WIDGET_WIDTH_SCALE, Math.min(wScale + 1, 10)).apply();
+                else if (which == 3) prefs.edit().putInt(PREF_WIDGET_WIDTH_SCALE, Math.max(wScale - 1, 3)).apply();
+                applyWidgetMode();
+                showWidgetSizeMenu(); // 連續調整
+            })
+            .setPositiveButton("Done", null)
+            .show();
+    }
+
+    private void showWidgetCoordinatesMenu() {
+        String[] options = {"Move Down", "Move Up"};
+        getDialogBuilder()
+            .setTitle("Set Coordinates")
+            .setItems(options, (dialog, which) -> {
+                int y = prefs.getInt(PREF_WIDGET_Y_OFFSET, 0);
+                if (which == 0) prefs.edit().putInt(PREF_WIDGET_Y_OFFSET, y + 20).apply();
+                else if (which == 1) prefs.edit().putInt(PREF_WIDGET_Y_OFFSET, Math.max(y - 20, 0)).apply();
+                applyWidgetMode();
+                showWidgetCoordinatesMenu(); // 連續調整
+            })
+            .setPositiveButton("Done", null)
+            .show();
+    }
+
+    private void loadWidget(int appWidgetId) {
+        AppWidgetProviderInfo appWidgetInfo = mAppWidgetManager.getAppWidgetInfo(appWidgetId);
+        if (appWidgetInfo == null) return;
+
+        AppWidgetHostView hostView = mAppWidgetHost.createView(this, appWidgetId, appWidgetInfo);
+        hostView.setAppWidget(appWidgetId, appWidgetInfo);
+        
+        ViewGroup container = (ViewGroup) widgetContainer;
+        container.removeAllViews();
+        container.addView(hostView);
+
+        float density = getResources().getDisplayMetrics().density;
+        int heightPx = (int)(prefs.getInt(PREF_WIDGET_HEIGHT, 250) * density);
+        int yOffsetPx = (int)(prefs.getInt(PREF_WIDGET_Y_OFFSET, 0) * density);
+        int wScale = prefs.getInt(PREF_WIDGET_WIDTH_SCALE, 10);
+
+        // 套用大小與座標 (Margin)
+        ViewGroup.MarginLayoutParams lp = (ViewGroup.MarginLayoutParams) container.getLayoutParams();
+        lp.topMargin = (int)(16 * density) + yOffsetPx;
+        lp.width = (int)(getResources().getDisplayMetrics().widthPixels * (wScale / 10.0f));
+        container.setLayoutParams(lp);
+
+        // 確保在 RelativeLayout 中居中
+        if (lp instanceof RelativeLayout.LayoutParams) {
+            ((RelativeLayout.LayoutParams) lp).addRule(RelativeLayout.CENTER_HORIZONTAL);
+        }
+
+        ViewGroup.LayoutParams vlp = hostView.getLayoutParams();
+        vlp.width = ViewGroup.LayoutParams.MATCH_PARENT;
+        vlp.height = heightPx;
+        hostView.setLayoutParams(vlp);
+        
+        // 核心修復：通知 Widget 它的可用尺寸 (以 dp 為單位)
+        // 許多 Widget (如 Lineage 時鐘) 依賴這些選項來決定是否渲染內容
+        Bundle options = new Bundle();
+        int widthDp = (int)(lp.width / density);
+        int heightDp = (int)(heightPx / density);
+        options.putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, widthDp);
+        options.putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, heightDp);
+        options.putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, widthDp);
+        options.putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, heightDp);
+        hostView.updateAppWidgetOptions(options);
+        
+        hostView.setOnLongClickListener(v -> {
+            showWidgetSettingsDialog();
+            return true;
+        });
     }
 
     private void showCropDialog(Uri uri, final String pkg, final String cls) {
@@ -966,17 +1322,24 @@ public class MainActivity extends Activity {
             final List<AppInfo> newList = new ArrayList<>();
             for (ResolveInfo ri : availableActivities) {
                 String pkg = ri.activityInfo.packageName;
+                if (pkg.equals(getPackageName())) continue; // 排除自身
                 String cls = ri.activityInfo.name;
-                if (hidden.contains(pkg)) continue;
-                String label = prefs.getString(PREF_CUSTOM_LABEL_PREFIX + pkg, null);
+                String cacheKey = pkg + "/" + cls;
+                if (hidden.contains(pkg) || hidden.contains(cacheKey)) continue;
+                String label = prefs.getString(PREF_CUSTOM_LABEL_PREFIX + cacheKey, null);
+                if (label == null) label = prefs.getString(PREF_CUSTOM_LABEL_PREFIX + pkg, null); // 退而求其次檢查舊版標籤
                 if (label == null) label = ri.loadLabel(pm).toString();
                 newList.add(new AppInfo(label, pkg, cls));
             }
             uiHandler.post(() -> {
+                Collections.sort(newList, (a, b) -> a.label.compareToIgnoreCase(b.label));
                 allApps.clear();
                 allApps.addAll(newList);
                 appMap.clear();
-                for (AppInfo app : newList) appMap.put(app.packageName, app);
+                for (AppInfo app : newList) {
+                    String key = app.packageName + "/" + app.className;
+                    appMap.put(key, app);
+                }
                 setupDock(); // 確保 App 載入完後才設定 Dock
                 if (adapter != null) adapter.notifyDataSetChanged();
             });
@@ -1099,38 +1462,56 @@ public class MainActivity extends Activity {
                 } else {
                     pkg = dockValue;
                 }
-                
-                // 只有在 appMap 不為空（代表已載入）時才檢查 App 是否存在
-                if (!appMap.isEmpty() && !appMap.containsKey(pkg)) {
-                    pkg = null; cls = null;
+            }
+
+            // 檢查該 App 是否還存在於系統中
+            String currentKey = (pkg != null) ? (cls != null ? pkg + "/" + cls : pkg) : null;
+            AppInfo app = (currentKey != null) ? appMap.get(currentKey) : null;
+            
+            // 如果只有包名 (舊設定)，嘗試找一個預設 Activity
+            if (app == null && pkg != null && cls == null) {
+                for (AppInfo a : allApps) {
+                    if (a.packageName.equals(pkg)) {
+                        app = a;
+                        cls = a.className;
+                        break;
+                    }
                 }
+            }
+
+            // 如果 App 不存在或沒設定，則進行自動分配
+            if (app == null) {
+                pkg = null; cls = null;
+                for (AppInfo a : allApps) {
+                    if (a.packageName.toLowerCase().contains(keywords[i])) {
+                        app = a;
+                        pkg = a.packageName;
+                        cls = a.className;
+                        break;
+                    }
+                }
+                
+                if (app == null && !allApps.isEmpty()) {
+                    app = allApps.get(random.nextInt(allApps.size()));
+                    pkg = app.packageName;
+                    cls = app.className;
+                }
+                
+                if (pkg != null) {
+                    prefs.edit().putString(PREF_DOCK_PREFIX + i, pkg + "/" + (cls != null ? cls : "")).apply();
+                }
+            } else {
+                // 確保從 app 中更新 pkg/cls (特別是舊設定遷移過來的)
+                pkg = app.packageName;
+                cls = app.className;
             }
 
             int viewId = getResources().getIdentifier("dock_" + (index + 1), "id", getPackageName());
             ImageView iv = findViewById(viewId);
 
-            if (pkg == null) {
-                for (AppInfo app : allApps) {
-                    if (app.packageName.toLowerCase().contains(keywords[i])) {
-                        pkg = app.packageName;
-                        cls = app.className;
-                        break;
-                    }
-                }
-                
-                if (pkg == null && !allApps.isEmpty()) {
-                    AppInfo randomApp = allApps.get(random.nextInt(allApps.size()));
-                    pkg = randomApp.packageName;
-                    cls = randomApp.className;
-                }
-                if (pkg != null) prefs.edit().putString(PREF_DOCK_PREFIX + i, pkg + "/" + (cls != null ? cls : "")).apply();
-            }
-
-            if (pkg != null) {
-                AppInfo app = appMap.get(pkg);
-                // 優先使用 Map 中的 cls，防止啟動錯誤
+            if (app != null) {
                 final String finalPkg = pkg;
-                final String finalCls = (app != null) ? app.className : cls;
+                final String finalCls = cls;
                 iv.setImageDrawable(getAppIcon(finalPkg, finalCls));
                 iv.setOnClickListener(v -> launchApp(finalPkg, finalCls));
                 iv.setOnLongClickListener(v -> { showDockMenu(index, finalPkg, finalCls); return true; });
@@ -1157,21 +1538,24 @@ public class MainActivity extends Activity {
                     setupDock();
                     if (adapter != null) adapter.notifyDataSetChanged();
                 } else if (which == 3) {
-                    showChangeNameDialog(pkg);
+                    showChangeNameDialog(pkg, cls);
                 } else if (which == 4) {
-                    prefs.edit().remove(PREF_CUSTOM_LABEL_PREFIX + pkg).apply();
+                    String cacheKey = (cls != null && !cls.isEmpty()) ? pkg + "/" + cls : pkg;
+                    prefs.edit().remove(PREF_CUSTOM_LABEL_PREFIX + cacheKey).apply();
                     loadApps();
                     if (adapter != null) adapter.notifyDataSetChanged();
                 }
             }).show();
     }
 
-    private void showChangeNameDialog(String pkg) {
+    private void showChangeNameDialog(String pkg, String cls) {
         final EditText input = new EditText(this);
         input.setSingleLine();
         String currentLabel = "";
+        String cacheKey = (cls != null && !cls.isEmpty()) ? pkg + "/" + cls : pkg;
+        
         for (AppInfo app : allApps) {
-            if (app.packageName.equals(pkg)) {
+            if (app.packageName.equals(pkg) && (cls == null || cls.isEmpty() || app.className.equals(cls))) {
                 currentLabel = app.label;
                 break;
             }
@@ -1192,9 +1576,9 @@ public class MainActivity extends Activity {
             .setPositiveButton("OK", (dialog, which) -> {
                 String newName = input.getText().toString().trim();
                 if (newName.isEmpty()) {
-                    prefs.edit().remove(PREF_CUSTOM_LABEL_PREFIX + pkg).apply();
+                    prefs.edit().remove(PREF_CUSTOM_LABEL_PREFIX + cacheKey).apply();
                 } else {
-                    prefs.edit().putString(PREF_CUSTOM_LABEL_PREFIX + pkg, newName).apply();
+                    prefs.edit().putString(PREF_CUSTOM_LABEL_PREFIX + cacheKey, newName).apply();
                 }
                 loadApps();
                 if (adapter != null) adapter.notifyDataSetChanged();
@@ -1256,6 +1640,13 @@ public class MainActivity extends Activity {
             intent = getPackageManager().getLaunchIntentForPackage(pkg);
         }
         if (intent != null) startActivity(intent);
+    }
+
+    private boolean isDefaultLauncher() {
+        Intent intent = new Intent(Intent.ACTION_MAIN);
+        intent.addCategory(Intent.CATEGORY_HOME);
+        ResolveInfo res = getPackageManager().resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY);
+        return res != null && res.activityInfo != null && getPackageName().equals(res.activityInfo.packageName);
     }
 
     private int getBatteryLevel() {

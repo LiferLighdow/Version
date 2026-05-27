@@ -4,18 +4,14 @@ plugins {
 
 android {
     namespace = "com.liferlighdow.version"
-    compileSdk {
-        version = release(36) {
-            minorApiLevel = 1
-        }
-    }
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.liferlighdow.version"
         minSdk = 21
-        targetSdk = 36
-        versionCode = 8
-        versionName = "1.3.0"
+        targetSdk = 37
+        versionCode = 9
+        versionName = "2.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

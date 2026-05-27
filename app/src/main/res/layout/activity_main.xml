@@ -97,6 +97,28 @@
             </LinearLayout>
         </LinearLayout>
 
+        <!-- Widget Mode Container -->
+        <FrameLayout
+            android:id="@+id/widget_container"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:layout_above="@id/home_search"
+            android:layout_below="@id/clock_container"
+            android:layout_marginTop="16dp"
+            android:layout_marginBottom="16dp"
+            android:layout_marginLeft="16dp"
+            android:layout_marginRight="16dp"
+            android:visibility="gone">
+            <!-- Widgets will be hosted here -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:text="Tap to add a widget"
+                android:textColor="#44FFFFFF"
+                android:textSize="14sp" />
+        </FrameLayout>
+
         <!-- Search Bar -->
         <EditText
             android:id="@+id/home_search"
