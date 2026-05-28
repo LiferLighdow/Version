@@ -24,9 +24,8 @@ VersionOS 2.0.0 is a high-performance Android launcher designed for those who va
 ## ✨ Key Features (v2.0.0 "Widget & Privacy Update")
 
 ### 🖼️ Advanced Widget Hosting (NEW)
-- **Full Widget Support**: Now includes a complete `AppWidgetHost` engine to run any system or 3rd-party widget.
-- **Precision Layout**: Manually adjust Widget position (Y-offset), width scale, and height via a dedicated management menu.
-- **Stability**: State-persistent storage ensures your widgets stay exactly where you left them after reboot.
+- **Precision Layout**: Manually adjust Widget position (Y-offset), width scale, and height with **active collision avoidance** to prevent overlapping with system UI.
+- **Stability**: State-persistent storage and **Smart View Recycling** ensure smooth resizing without flickering or data loss (e.g., scroll position stays intact).
 
 ### 🔒 Enhanced Privacy & Security (NEW)
 - **PIN Protection**: Secure your hidden apps list with a numeric PIN code.
@@ -54,13 +53,14 @@ VersionOS 2.0.0 is a high-performance Android launcher designed for those who va
 ### 👆 Intuitive Gestures
 - **Smart Swipe (AOSP Mode)**:
     - **Swipe Up**: Instantly call the App Drawer.
+    - **Adaptive Interception**: Intelligently distinguishes between widget interaction and system gestures.
 - **System Gestures**:
     - **Fling Down**: Expand the system notification panel (via safe reflection).
     - **Double Tap**: Lock screen/Sleep (Requires Device Admin activation).
 
 ### 📊 Real-Time Telemetry
 - **Hardware Stats**: Capsule-design widget monitoring **Battery Level**, **RAM usage**, and **Storage (ROM)** status.
-- **Optimized Monitoring**: Replaced legacy CPU polling with high-efficiency Battery API calls to maximize device standby time.
+- **Optimized Monitoring**: Replaced legacy CPU polling with **event-driven Battery Broadcasts** to minimize CPU wakeups and maximize device standby time.
 
 ## 🚀 Technical Philosophy: "Mechanical Sympathy"
 - **Zero-Cost UI**: Employs `ViewOutlineProvider` for native hardware-layer corner clipping.

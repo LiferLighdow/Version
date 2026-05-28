@@ -55,13 +55,13 @@ import android.content.BroadcastReceiver;
 import android.content.IntentFilter;
 import android.net.Uri;
 import android.util.LruCache;
+import android.graphics.Rect;
 
 import android.os.BatteryManager;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.HashSet;
 import java.util.Set;
-import java.io.RandomAccessFile;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -103,7 +103,20 @@ public class MainActivity extends Activity {
         @Override
         public void onReceive(Context context, Intent intent) {
             if (iconCache != null) iconCache.evictAll();
-            loadApps(); // loadApps 內部現在會自動觸發 setupDock()
+            loadApps(); 
+        }
+    };
+
+    private final BroadcastReceiver batteryReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            int level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+            int scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+            if (level != -1 && scale != -1) {
+                int pct = (int) (level * 100 / (float) scale);
+                stringBuilder.setLength(0);
+                batteryStat.setText(stringBuilder.append("BAT: ").append(pct).append("%"));
+            }
         }
     };
 
@@ -153,14 +166,6 @@ public class MainActivity extends Activity {
         mAppWidgetManager = AppWidgetManager.getInstance(this);
         mAppWidgetHost = new AppWidgetHost(this, APPWIDGET_HOST_ID);
 
-        // 相容性修復：將舊版 boolean 轉換為新版 int
-        try {
-            prefs.getInt(PREF_ADAPTIVE_ICON, 0);
-        } catch (ClassCastException e) {
-            boolean oldVal = prefs.getBoolean(PREF_ADAPTIVE_ICON, false);
-            prefs.edit().putInt(PREF_ADAPTIVE_ICON, oldVal ? 2 : 0).apply(); // 預設轉為方圓形
-        }
-
         // 初始化圖示快取 (使用可用記憶體的 1/8)
         int maxMemory = (int) (Runtime.getRuntime().maxMemory() / 1024);
         int cacheSize = maxMemory / 8;
@@ -184,6 +189,9 @@ public class MainActivity extends Activity {
         loadApps();
         setupSearch();
         setupGestures();
+
+        if (mAppWidgetHost != null) mAppWidgetHost.startListening();
+        applyWidgetMode();
 
         IntentFilter filter = new IntentFilter();
         filter.addAction(Intent.ACTION_PACKAGE_ADDED);
@@ -341,6 +349,7 @@ public class MainActivity extends Activity {
         gestureDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
             @Override
             public boolean onDoubleTap(MotionEvent e) {
+                if (isTouchOnWidget(e)) return false;
                 if (devicePolicyManager.isAdminActive(adminComponent)) {
                     devicePolicyManager.lockNow();
                 } else {
@@ -355,6 +364,10 @@ public class MainActivity extends Activity {
 
             @Override
             public boolean onFling(MotionEvent e1, MotionEvent e2, float velocityX, float velocityY) {
+                // 如果滑動是從 Widget 內部開始的，且該滑動很可能是為了操作 Widget，則不觸發 Launcher 功能
+                // 這裡我們允許 AOSP 上滑手勢穿透「空的容器區域」，只在有實體 Widget 時進行判斷
+                if (isTouchOnWidget(e1)) return false;
+                
                 // 下滑偵測 (向下速度大於門檻且為垂直向)
                 if (velocityY > 500 && Math.abs(velocityY) > Math.abs(velocityX)) {
                     expandNotifications();
@@ -381,12 +394,25 @@ public class MainActivity extends Activity {
         } catch (Exception ignored) {}
     }
 
+    private final Rect hitRect = new Rect();
     @Override
     public boolean dispatchTouchEvent(MotionEvent ev) {
         if (!isSearchVisible) {
             gestureDetector.onTouchEvent(ev);
         }
         return super.dispatchTouchEvent(ev);
+    }
+
+    private boolean isTouchOnWidget(MotionEvent ev) {
+        if (prefs.getBoolean(PREF_WIDGET_MODE, false) && widgetContainer != null && widgetContainer.getVisibility() == View.VISIBLE) {
+            ViewGroup container = (ViewGroup) widgetContainer;
+            if (container.getChildCount() > 0) {
+                View widget = container.getChildAt(0);
+                widget.getGlobalVisibleRect(hitRect);
+                return hitRect.contains((int)ev.getRawX(), (int)ev.getRawY());
+            }
+        }
+        return false;
     }
 
     public static class AdminReceiver extends android.app.admin.DeviceAdminReceiver {}
@@ -959,7 +985,7 @@ public class MainActivity extends Activity {
     private void showWidgetSettingsDialog() {
         int widgetId = prefs.getInt(PREF_WIDGET_ID, -1);
         String chooseOrChange = (widgetId == -1) ? "Choose Widget" : "Change Widget";
-        
+
         List<String> optionsList = new ArrayList<>();
         optionsList.add(chooseOrChange);
         if (widgetId != -1) {
@@ -970,7 +996,7 @@ public class MainActivity extends Activity {
         optionsList.add("Launcher Settings");
         
         String[] options = optionsList.toArray(new String[0]);
-        
+
         getDialogBuilder()
             .setTitle("Widget Management")
             .setItems(options, (dialog, which) -> {
@@ -984,7 +1010,7 @@ public class MainActivity extends Activity {
                 } else if (selected.equals("Delete")) {
                     mAppWidgetHost.deleteAppWidgetId(widgetId);
                     prefs.edit().remove(PREF_WIDGET_ID).apply();
-                    
+
                     // 核心修復：立即從畫面上移除 Widget 並恢復提示
                     ViewGroup container = (ViewGroup) widgetContainer;
                     container.removeAllViews();
@@ -993,7 +1019,7 @@ public class MainActivity extends Activity {
                     hint.setTextColor(0x44FFFFFF);
                     hint.setGravity(android.view.Gravity.CENTER);
                     container.addView(hint);
-                    
+
                     applyWidgetMode();
                 } else {
                     showSettings();
@@ -1025,7 +1051,11 @@ public class MainActivity extends Activity {
             .setTitle("Set Coordinates")
             .setItems(options, (dialog, which) -> {
                 int y = prefs.getInt(PREF_WIDGET_Y_OFFSET, 0);
-                if (which == 0) prefs.edit().putInt(PREF_WIDGET_Y_OFFSET, y + 20).apply();
+                if (which == 0) {
+                    // 防呆：限制設定上限 (大約 300dp)，避免使用者將 Widget 推得太深
+                    if (y < 300) prefs.edit().putInt(PREF_WIDGET_Y_OFFSET, y + 20).apply();
+                    else android.widget.Toast.makeText(this, "Maximum depth reached", android.widget.Toast.LENGTH_SHORT).show();
+                }
                 else if (which == 1) prefs.edit().putInt(PREF_WIDGET_Y_OFFSET, Math.max(y - 20, 0)).apply();
                 applyWidgetMode();
                 showWidgetCoordinatesMenu(); // 連續調整
@@ -1038,12 +1068,23 @@ public class MainActivity extends Activity {
         AppWidgetProviderInfo appWidgetInfo = mAppWidgetManager.getAppWidgetInfo(appWidgetId);
         if (appWidgetInfo == null) return;
 
-        AppWidgetHostView hostView = mAppWidgetHost.createView(this, appWidgetId, appWidgetInfo);
-        hostView.setAppWidget(appWidgetId, appWidgetInfo);
-        
         ViewGroup container = (ViewGroup) widgetContainer;
-        container.removeAllViews();
-        container.addView(hostView);
+        AppWidgetHostView hostView = null;
+
+        // 智慧複用：如果容器內已有同 ID 的 Widget，則不需要重新 createView
+        if (container.getChildCount() > 0 && container.getChildAt(0) instanceof AppWidgetHostView) {
+            AppWidgetHostView existing = (AppWidgetHostView) container.getChildAt(0);
+            if (existing.getAppWidgetId() == appWidgetId) {
+                hostView = existing;
+            }
+        }
+
+        if (hostView == null) {
+            hostView = mAppWidgetHost.createView(this, appWidgetId, appWidgetInfo);
+            hostView.setAppWidget(appWidgetId, appWidgetInfo);
+            container.removeAllViews();
+            container.addView(hostView);
+        }
 
         float density = getResources().getDisplayMetrics().density;
         int heightPx = (int)(prefs.getInt(PREF_WIDGET_HEIGHT, 250) * density);
@@ -1052,22 +1093,27 @@ public class MainActivity extends Activity {
 
         // 套用大小與座標 (Margin)
         ViewGroup.MarginLayoutParams lp = (ViewGroup.MarginLayoutParams) container.getLayoutParams();
-        lp.topMargin = (int)(16 * density) + yOffsetPx;
-        lp.width = (int)(getResources().getDisplayMetrics().widthPixels * (wScale / 10.0f));
-        container.setLayoutParams(lp);
 
-        // 確保在 RelativeLayout 中居中
+        // 安全限制：y_offset 不應超過螢幕總高度的 1/4，防止壓迫搜尋框
+        int maxAllowedOffsetPx = (int)(getResources().getDisplayMetrics().heightPixels * 0.25f);
+        int safeYOffsetPx = Math.min(yOffsetPx, maxAllowedOffsetPx);
+
+        lp.topMargin = (int)(16 * density) + safeYOffsetPx;
+        lp.width = (int)(getResources().getDisplayMetrics().widthPixels * (wScale / 10.0f));
+
         if (lp instanceof RelativeLayout.LayoutParams) {
-            ((RelativeLayout.LayoutParams) lp).addRule(RelativeLayout.CENTER_HORIZONTAL);
+            RelativeLayout.LayoutParams rlp = (RelativeLayout.LayoutParams) lp;
+            rlp.addRule(RelativeLayout.CENTER_HORIZONTAL);
+            rlp.addRule(RelativeLayout.ABOVE, R.id.home_search); // 始終保持在搜尋框上方，防止重疊
         }
+        container.setLayoutParams(lp);
 
         ViewGroup.LayoutParams vlp = hostView.getLayoutParams();
         vlp.width = ViewGroup.LayoutParams.MATCH_PARENT;
         vlp.height = heightPx;
         hostView.setLayoutParams(vlp);
-        
-        // 核心修復：通知 Widget 它的可用尺寸 (以 dp 為單位)
-        // 許多 Widget (如 Lineage 時鐘) 依賴這些選項來決定是否渲染內容
+
+        // 通知 Widget 它的可用尺寸
         Bundle options = new Bundle();
         int widthDp = (int)(lp.width / density);
         int heightDp = (int)(heightPx / density);
@@ -1076,7 +1122,7 @@ public class MainActivity extends Activity {
         options.putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, widthDp);
         options.putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, heightDp);
         hostView.updateAppWidgetOptions(options);
-        
+
         hostView.setOnLongClickListener(v -> {
             showWidgetSettingsDialog();
             return true;
@@ -1236,14 +1282,14 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        // 移除 loadApps() 和 setupDock()，改為僅在必要時更新
-        // 因為 packageReceiver 與 onCreate 已經涵蓋了初始化與變動監聽
+        registerReceiver(batteryReceiver, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
         startUpdaters();
     }
 
     @Override
     protected void onPause() {
         super.onPause();
+        unregisterReceiver(batteryReceiver);
         stopUpdaters();
     }
 
@@ -1272,7 +1318,6 @@ public class MainActivity extends Activity {
                 @Override
                 public void run() {
                     updateRam();
-                    updateBattery();
                     if (romCounter % 60 == 0) updateRom();
                     romCounter++;
                     uiHandler.postDelayed(this, 3000);
@@ -1293,11 +1338,6 @@ public class MainActivity extends Activity {
         nowDate.setTime(System.currentTimeMillis());
         timeText.setText(timeFormat.format(nowDate));
         dateText.setText(dateFormat.format(nowDate));
-    }
-
-    private void updateBattery() {
-        stringBuilder.setLength(0);
-        batteryStat.setText(stringBuilder.append("BAT: ").append(getBatteryLevel()).append("%"));
     }
 
     private void updateRam() {
@@ -1649,14 +1689,6 @@ public class MainActivity extends Activity {
         return res != null && res.activityInfo != null && getPackageName().equals(res.activityInfo.packageName);
     }
 
-    private int getBatteryLevel() {
-        BatteryManager bm = (BatteryManager) getSystemService(BATTERY_SERVICE);
-        if (bm != null) {
-            return bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY);
-        }
-        return 0;
-    }
-
     private int getRamPercentage() {
         ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
         ((ActivityManager) getSystemService(ACTIVITY_SERVICE)).getMemoryInfo(mi);
@@ -1692,41 +1724,46 @@ public class MainActivity extends Activity {
             
             int theme = prefs.getInt(PREF_THEME, 0);
             if (theme == 3) { // AOSP Grid Mode
-                layout.setOrientation(LinearLayout.VERTICAL);
-                layout.setGravity(android.view.Gravity.CENTER);
-                // 增加上下間距從 8dp 到 16dp
-                int vPad = (int)(16 * getResources().getDisplayMetrics().density);
-                layout.setPadding(0, vPad, 0, vPad);
-                
-                LinearLayout.LayoutParams lpIcon = (LinearLayout.LayoutParams) icon.getLayoutParams();
-                lpIcon.setMargins(0, 0, 0, 0);
-                icon.setLayoutParams(lpIcon);
-                
-                LinearLayout.LayoutParams lpLabel = (LinearLayout.LayoutParams) label.getLayoutParams();
-                lpLabel.width = ViewGroup.LayoutParams.MATCH_PARENT;
-                lpLabel.setMarginStart(0);
-                label.setLayoutParams(lpLabel);
-                label.setGravity(android.view.Gravity.CENTER);
-                label.setTextSize(12);
-                label.setSingleLine(true);
-                label.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                if (layout.getOrientation() != LinearLayout.VERTICAL) {
+                    layout.setOrientation(LinearLayout.VERTICAL);
+                    layout.setGravity(android.view.Gravity.CENTER);
+                    int vPad = (int)(16 * getResources().getDisplayMetrics().density);
+                    layout.setPadding(0, vPad, 0, vPad);
+                    
+                    LinearLayout.LayoutParams lpIcon = (LinearLayout.LayoutParams) icon.getLayoutParams();
+                    lpIcon.setMargins(0, 0, 0, 0);
+                    icon.setLayoutParams(lpIcon);
+                    
+                    LinearLayout.LayoutParams lpLabel = (LinearLayout.LayoutParams) label.getLayoutParams();
+                    lpLabel.width = ViewGroup.LayoutParams.MATCH_PARENT;
+                    lpLabel.weight = 0;
+                    lpLabel.setMarginStart(0);
+                    label.setLayoutParams(lpLabel);
+                    label.setGravity(android.view.Gravity.CENTER);
+                    label.setTextSize(12);
+                    label.setSingleLine(true);
+                    label.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                }
             } else { // List Mode
-                layout.setOrientation(LinearLayout.HORIZONTAL);
-                layout.setGravity(android.view.Gravity.CENTER_VERTICAL);
-                int pSize = (int)(12 * getResources().getDisplayMetrics().density);
-                layout.setPadding(pSize, pSize, pSize, pSize);
-                
-                LinearLayout.LayoutParams lpIcon = (LinearLayout.LayoutParams) icon.getLayoutParams();
-                icon.setLayoutParams(lpIcon);
-                
-                LinearLayout.LayoutParams lpLabel = (LinearLayout.LayoutParams) label.getLayoutParams();
-                lpLabel.width = 0;
-                lpLabel.weight = 1;
-                lpLabel.setMarginStart((int)(16 * getResources().getDisplayMetrics().density));
-                label.setLayoutParams(lpLabel);
-                label.setGravity(android.view.Gravity.CENTER_VERTICAL);
-                label.setTextSize(16);
-                label.setSingleLine(false);
+                if (layout.getOrientation() != LinearLayout.HORIZONTAL) {
+                    layout.setOrientation(LinearLayout.HORIZONTAL);
+                    layout.setGravity(android.view.Gravity.CENTER_VERTICAL);
+                    int pSize = (int)(12 * getResources().getDisplayMetrics().density);
+                    layout.setPadding(pSize, pSize, pSize, pSize);
+                    
+                    LinearLayout.LayoutParams lpIcon = (LinearLayout.LayoutParams) icon.getLayoutParams();
+                    icon.setLayoutParams(lpIcon);
+                    
+                    LinearLayout.LayoutParams lpLabel = (LinearLayout.LayoutParams) label.getLayoutParams();
+                    lpLabel.width = 0;
+                    lpLabel.weight = 1;
+                    lpLabel.setMarginStart((int)(16 * getResources().getDisplayMetrics().density));
+                    label.setLayoutParams(lpLabel);
+                    label.setGravity(android.view.Gravity.CENTER_VERTICAL);
+                    label.setTextSize(16);
+                    label.setSingleLine(false);
+                    label.setEllipsize(null);
+                }
             }
             
             label.setText(app.label);
